@@ -24,107 +24,68 @@ function useDB(key,init){
   return[v,set];
 }
 
-// ─── API SHEETS ───────────────────────────────────────────────
-// Todas las llamadas al Google Sheet pasan por acá
+// ─── SHEETS API ───────────────────────────────────────────────
 const api={
-  // Leer todos los consolidados del Sheet
   async leer(){
     try{
-      const r=await fetch(`${APPS_SCRIPT_URL}?accion=leer_consolidados`,{method:'GET'});
+      if(APPS_SCRIPT_URL.includes('TU_URL_AQUI'))return null;
+      const r=await fetch(`${APPS_SCRIPT_URL}?accion=leer_consolidados`);
       const d=await r.json();
-      return d.consolidados||[];
-    }catch(e){console.error('api.leer',e);return[];}
+      return d.status==='ok'?d.consolidados:null;
+    }catch{return null;}
   },
-  // Crear un consolidado nuevo en el Sheet
-  async crear(cons){
+  async post(tipo,data){
     try{
+      if(APPS_SCRIPT_URL.includes('TU_URL_AQUI'))return;
       await fetch(APPS_SCRIPT_URL,{method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({tipo:'crear_consolidado',data:cons}),
-        mode:'no-cors'});
-    }catch(e){console.error('api.crear',e);}
-  },
-  // Actualizar una línea (OK / Error / revertir)
-  async linea(data){
-    try{
-      await fetch(APPS_SCRIPT_URL,{method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({tipo:'actualizar_linea',data}),
-        mode:'no-cors'});
-    }catch(e){console.error('api.linea',e);}
-  },
-  // Cerrar consolidado con firma
-  async cerrar(data){
-    try{
-      await fetch(APPS_SCRIPT_URL,{method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({tipo:'cerrar_consolidado',data}),
-        mode:'no-cors'});
-    }catch(e){console.error('api.cerrar',e);}
-  },
-  // Registrar finalización de un operario
-  async finOp(data){
-    try{
-      await fetch(APPS_SCRIPT_URL,{method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({tipo:'finalizar_operario',data}),
-        mode:'no-cors'});
-    }catch(e){console.error('api.finOp',e);}
-  },
-  // Enviar recepciones al Sheet
-  async recepciones(items){
-    try{
-      await fetch(APPS_SCRIPT_URL,{method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({tipo:'guardar_recepciones',data:items}),
-        mode:'no-cors'});
-    }catch(e){console.error('api.recepciones',e);}
+        body:JSON.stringify({tipo,data}),mode:'no-cors'});
+    }catch(e){console.warn('Sheets:',e);}
   },
 };
 
-// Hook para consolidados: lee del Sheet, sincroniza cada 15 segundos
+// Hook consolidados: localStorage + sync con Sheets cada 20s
 function useConsolidados(){
-  const[cons,setCons]=useState([]);
-  const[loading,setLoading]=useState(true);
-  const[lastSync,setLastSync]=useState(null);
+  const[cons,setCons]=useState(()=>{try{const s=localStorage.getItem('rosarc_cons_v7');return s?JSON.parse(s):[]}catch{return[];}});
+  const[syncOk,setSyncOk]=useState(false);
+  const[lastSync,setLastSync]=useState('');
 
-  const sincronizar=useCallback(async(silencioso=false)=>{
-    if(!silencioso)setLoading(true);
-    try{
-      if(APPS_SCRIPT_URL.includes('TU_URL_AQUI')){
-        // Sin URL configurada: usar localStorage como fallback
-        const s=localStorage.getItem('rosarc_cons_local');
-        setCons(s?JSON.parse(s):[]);
-      }else{
-        const data=await api.leer();
-        setCons(data);
-        setLastSync(new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}));
-      }
-    }catch(e){
-      const s=localStorage.getItem('rosarc_cons_local');
-      setCons(s?JSON.parse(s):[]);
-    }finally{setLoading(false);}
-  },[]);
-
-  // Sincronización inicial
-  useEffect(()=>{sincronizar();},[]);
-
-  // Re-sincronizar cada 15 segundos
-  useEffect(()=>{
-    const t=setInterval(()=>sincronizar(true),15000);
-    return()=>clearInterval(t);
-  },[sincronizar]);
-
-  // Guardar localmente como backup
-  const setConsLocal=useCallback((fn)=>{
+  const guardar=useCallback(fn=>{
     setCons(prev=>{
       const next=typeof fn==='function'?fn(prev):fn;
-      try{localStorage.setItem('rosarc_cons_local',JSON.stringify(next));}catch{}
+      try{localStorage.setItem('rosarc_cons_v7',JSON.stringify(next));}catch{}
       return next;
     });
   },[]);
 
-  return{cons,setCons:setConsLocal,loading,lastSync,sincronizar};
+  const sincronizar=useCallback(async()=>{
+    const remoto=await api.leer();
+    if(!remoto)return;
+    // Merge: conservar local si tiene datos más recientes (líneas marcadas)
+    setCons(prev=>{
+      const merged=remoto.map(rc=>{
+        const local=prev.find(lc=>String(lc.id)===String(rc.id));
+        if(!local)return rc;
+        // Si el local tiene más líneas marcadas, lo conservamos
+        const localMarcadas=(local.lines||[]).filter(l=>l.estado).length;
+        const remotoMarcadas=(rc.lines||[]).filter(l=>l.estado).length;
+        return localMarcadas>=remotoMarcadas?local:rc;
+      });
+      // Agregar consolidados locales que aún no están en remoto
+      prev.forEach(lc=>{
+        if(!merged.find(m=>String(m.id)===String(lc.id)))merged.push(lc);
+      });
+      try{localStorage.setItem('rosarc_cons_v7',JSON.stringify(merged));}catch{}
+      return merged;
+    });
+    setSyncOk(true);
+    setLastSync(new Date().toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}));
+  },[]);
+
+  useEffect(()=>{sincronizar();},[]);
+  useEffect(()=>{const t=setInterval(()=>sincronizar(),20000);return()=>clearInterval(t);},[sincronizar]);
+
+  return{cons,setCons:guardar,sincronizar,syncOk,lastSync};
 }
 
 const card=(x={})=>({background:C.surf,border:`1px solid ${C.bord}`,borderRadius:'12px',padding:'16px',...x});
@@ -754,35 +715,35 @@ function ModArmado({toast,operarios,cons,setCons}){
       sec.products.map(p=>({...p,id:`${sec.name.replace(/\s/g,'')}-${p.id}`,seccion:sec.name,estado:null,motivo:null,operario:null,ts:null}))
     );
     const c={
-      id:String(now),numero:fNum,fecha:fFecha,horaInicio:fHora,controlador:fCtrl,piqueos:totalPiq,
+      id:now,numero:fNum,fecha:fFecha,horaInicio:fHora,controlador:fCtrl,piqueos:totalPiq,
       activeOps:fOps.map(id=>{
         const op=operarios.find(o=>o.id===id);
         return{...op,startTime:now,endTime:null,finished:false};
       }),
       startTime:now,finished:false,totalTime:null,lines
     };
-    // Guardar localmente primero (respuesta inmediata)
-    setCons(cs=>[...cs,c]);
-    setCId(String(now));
-    setScr('print');
-    // Luego enviar al Sheet en segundo plano
-    api.crear(c).catch(()=>{});
+    setCons(cs=>[...cs,c]);setCId(now);setScr('print');
+    // Enviar al Sheet en segundo plano
+    api.post('crear_consolidado',{...c,id:String(now)});
   }
 
   // ── Finalizar operario individual ──────────────────────────
   function finalizarOp(consId,opId){
     const now=Date.now();
-    setCons(cs=>cs.map(c=>c.id!==consId?c:{
-      ...c,activeOps:c.activeOps.map(o=>o.id!==opId||o.finished?o:{...o,endTime:now,finished:true})
-    }));
-    const c=cons.find(x=>String(x.id)===String(consId));
+    const c=cons.find(x=>x.id===consId);
     const op=c?.activeOps.find(o=>o.id===opId);
+    setCons(cs=>cs.map(x=>x.id!==consId?x:{
+      ...x,activeOps:x.activeOps.map(o=>o.id===opId&&!o.finished?{...o,endTime:now,finished:true}:o)
+    }));
     if(op){
       toast(`✅ ${op.nombre} finalizó`);
-      api.finOp({consId,numero:c.numero,fecha:c.fecha,nombre:op.nombre,codigo:op.codigo,
-        horaInicio:fHora,horaFin:new Date(now).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}),
-        startTime:op.startTime,endTime:now,piqueos:Math.round((c.piqueos||0)/Math.max((c.activeOps||[]).length,1))
-      }).catch(()=>{});
+      api.post('finalizar_operario',{
+        consId:String(consId),numero:c?.numero,fecha:c?.fecha,
+        nombre:op.nombre,codigo:op.codigo||'',
+        horaInicio:fHora(op.startTime),horaFin:fHora(now),
+        startTime:op.startTime,endTime:now,
+        piqueos:Math.round((c?.piqueos||0)/Math.max((c?.activeOps||[]).length,1))
+      });
     }
   }
 
@@ -927,10 +888,7 @@ function ModArmado({toast,operarios,cons,setCons}){
             {pct>0&&<div style={{height:'4px',background:C.bord,borderRadius:'2px',marginBottom:'9px'}}><div style={{height:'100%',width:`${pct}%`,background:`linear-gradient(90deg,${C.green},${C.blue})`,borderRadius:'2px'}}/></div>}
             <div style={{display:'flex',gap:'7px'}}>
               <button style={btn({background:C.surf2,color:C.muted,border:`1px solid ${C.bord}`,flex:1,fontSize:'12px',padding:'8px'})} onClick={()=>{setCId(c.id);setScr('print');}}>🖨 Reimprimir</button>
-              <button style={btn({background:'transparent',color:C.red,border:`1px solid ${C.red}`,fontSize:'12px',padding:'8px 10px'})} onClick={()=>{
-                if(!confirm('¿Eliminar este consolidado?'))return;
-                setCons(cs=>cs.filter(x=>x.id!==c.id));
-              }}>🗑</button>
+              <button style={btn({background:'transparent',color:C.red,border:`1px solid ${C.red}`,fontSize:'12px',padding:'8px 10px'})} onClick={()=>setCons(cs=>cs.filter(x=>x.id!==c.id))}>🗑</button>
             </div>
           </div>
         );
@@ -959,11 +917,10 @@ function ModControl({toast,operarios,cons,setCons,sincronizar}){
 
   function markLine(lid,estado,motivo=null){
     setCons(cs=>cs.map(x=>x.id!==currentId?x:{...x,lines:x.lines.map(l=>l.id!==lid?l:{...l,estado,motivo,operario:ctrl||'Controlador',ts:Date.now()})}));
-    // Enviar al Sheet
     const c=cons.find(x=>x.id===currentId);
     const line=c?.lines.find(l=>l.id===lid);
-    if(line){
-      api.linea({consId:currentId,codigo:line.codigo,descripcion:line.descripcion,estado,motivo:motivo||'',operario:ctrl||'Controlador'}).catch(()=>{});
+    if(line&&estado){
+      api.post('actualizar_linea',{consId:String(currentId),codigo:line.codigo,descripcion:line.descripcion,estado,motivo:motivo||'',operario:ctrl||'Controlador'});
     }
   }
   function cerrar(sigData){
@@ -971,10 +928,10 @@ function ModControl({toast,operarios,cons,setCons,sincronizar}){
     const c=cons.find(x=>x.id===currentId);
     setF(fs=>{const ex=fs.find(x=>x.id===currentId);const entry={id:currentId,controlador:ctrl,firma:sigData,ts:now};return ex?fs.map(x=>x.id===currentId?entry:x):[...fs,entry];});
     setCons(cs=>cs.map(x=>x.id!==currentId?x:{...x,finished:true,endTime:now,totalTime:now-x.startTime,controlador:ctrl}));
-    // Enviar al Sheet
-    api.cerrar({consId:currentId,numero:c?.numero,fecha:c?.fecha,controlador:ctrl,
-      horaFin:new Date(now).toLocaleTimeString('es-AR',{hour:'2-digit',minute:'2-digit'}),
-      totalTime:c?now-c.startTime:0}).catch(()=>{});
+    api.post('cerrar_consolidado',{
+      consId:String(currentId),numero:c?.numero,fecha:c?.fecha,
+      controlador:ctrl,horaFin:fHora(now),totalTime:c?now-c.startTime:0
+    });
     sSig(false);toast('✅ Control cerrado y firmado');setCId(null);
   }
 
@@ -990,9 +947,9 @@ function ModControl({toast,operarios,cons,setCons,sincronizar}){
 
   if(!currentId)return(
     <div style={BS}>
-      <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'2px'}}>
         <div style={secTit}>🔍 CONTROL DE CONSOLIDADOS</div>
-        <button style={btn({background:C.surf2,color:C.blue,border:`1px solid ${C.bord}`,fontSize:'11px',padding:'5px 10px',marginLeft:'auto',marginBottom:'10px'})} onClick={()=>sincronizar&&sincronizar()}>🔄 Actualizar</button>
+        <button style={btn({background:C.surf2,color:C.blue,border:`1px solid ${C.bord}`,fontSize:'11px',padding:'5px 10px'})} onClick={()=>sincronizar&&sincronizar()}>🔄 Actualizar</button>
       </div>
       {cons.length===0&&<div style={{textAlign:'center',color:C.muted,padding:'40px'}}>No hay consolidados generados aún.</div>}
       {cons.map(c=>{
@@ -1271,7 +1228,7 @@ export default function App(){
   const[toast,setT]=useState({msg:'',type:'ok'});
   const[operarios,setOperarios]=useDB('rosarc_ops_v6',[]);
   const[prods]=useDB('rosarc_venc',[]);
-  const{cons,setCons,loading,lastSync,sincronizar}=useConsolidados();
+  const{cons,setCons,sincronizar,syncOk,lastSync}=useConsolidados();
 
   function showToast(msg,type='ok'){setT({msg,type});setTimeout(()=>setT({msg:'',type:'ok'}),3500);}
 
@@ -1283,22 +1240,21 @@ export default function App(){
     {id:'metricas',icon:'📊',label:'Métricas'},
   ];
 
+  const sinURL=APPS_SCRIPT_URL.includes('TU_URL_AQUI');
+
   return(
     <div style={{background:C.bg,minHeight:'100vh',color:C.text,fontFamily:'system-ui,sans-serif',display:'flex',flexDirection:'column'}}>
-      <style>{`@keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}} *{box-sizing:border-box;} @media print{.no-print{display:none!important}}`}</style>
+      <style>{`@keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}} *{box-sizing:border-box;} @media print{.no-print{display:none!important}}`}</style>
       {toast.msg&&<div style={{position:'fixed',bottom:'18px',right:'18px',background:toast.type==='error'?C.red:C.surf2,border:`1px solid ${C.bord}`,borderRadius:'10px',padding:'11px 16px',fontSize:'13px',zIndex:9999,boxShadow:'0 8px 24px rgba(0,0,0,.5)',maxWidth:'300px'}}>{toast.msg}</div>}
+
+      {/* NAV */}
       <div className="no-print" style={{background:C.surf,borderBottom:`1px solid ${C.bord}`,padding:'0 12px',display:'flex',alignItems:'center',justifyContent:'space-between',height:'52px',position:'sticky',top:0,zIndex:100,flexShrink:0}}>
-        <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
-          <div style={{fontSize:'18px',fontWeight:900,letterSpacing:'3px',background:`linear-gradient(135deg,${C.blue},${C.accent})`,WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent'}}>ROS-ARC</div>
-          {/* Indicador de sincronización */}
-          <div style={{display:'flex',alignItems:'center',gap:'5px',cursor:'pointer'}} onClick={()=>sincronizar()}>
-            {loading
-              ? <div style={{width:'7px',height:'7px',borderRadius:'50%',background:C.gold,animation:'pulse 1s infinite'}}/>
-              : <div style={{width:'7px',height:'7px',borderRadius:'50%',background:APPS_SCRIPT_URL.includes('TU_URL_AQUI')?C.orange:C.green}}/>
-            }
-            <span style={{fontSize:'9px',color:C.muted,letterSpacing:'1px'}}>
-              {loading?'SINCRONIZANDO...':APPS_SCRIPT_URL.includes('TU_URL_AQUI')?'SIN CONFIGURAR':lastSync?`SYNC ${lastSync}`:'LOCAL'}
-            </span>
+        <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+          <div style={{fontSize:'18px',fontWeight:900,letterSpacing:'3px',background:`linear-gradient(135deg,${C.blue},${C.accent})`,WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',flexShrink:0}}>ROS-ARC</div>
+          {/* Indicador de sync */}
+          <div style={{display:'flex',alignItems:'center',gap:'4px',cursor:'pointer'}} onClick={sincronizar} title="Toca para sincronizar">
+            <div style={{width:'7px',height:'7px',borderRadius:'50%',background:sinURL?C.orange:syncOk?C.green:C.muted,animation:!syncOk&&!sinURL?'pulse 1.5s infinite':undefined}}/>
+            <span style={{fontSize:'9px',color:C.muted,letterSpacing:'1px',display:'none'}}>{sinURL?'LOCAL':syncOk?`SYNC ${lastSync}`:'...'}</span>
           </div>
         </div>
         <div style={{display:'flex',gap:'2px',background:C.surf2,borderRadius:'8px',padding:'3px',overflowX:'auto'}}>
@@ -1309,13 +1265,14 @@ export default function App(){
           ))}
         </div>
       </div>
-      {/* Banner cuando no está configurado */}
-      {APPS_SCRIPT_URL.includes('https://script.google.com/macros/s/AKfycbyFgyn7X_rDZ_qboQwoZatRFttzlvnYhmxWU55xlyQHVsJuKSU2QrTY7ZGx8lvqjOQ/exec')&&(
-        <div style={{background:'rgba(255,140,66,.12)',borderBottom:`1px solid ${C.orange}`,padding:'8px 16px',display:'flex',alignItems:'center',gap:'8px',fontSize:'12px',color:C.orange}}>
-          <span>⚠️</span>
-          <span>Modo sin conexión — los datos se guardan solo en este dispositivo. Configurá la URL de Apps Script para sincronizar entre dispositivos.</span>
+
+      {/* Banner sin URL configurada */}
+      {sinURL&&(
+        <div style={{background:'rgba(255,140,66,.1)',borderBottom:`1px solid ${C.orange}40`,padding:'7px 14px',fontSize:'11px',color:C.orange,display:'flex',gap:'6px'}}>
+          ⚠️ Modo local — configurá tu URL de Apps Script en línea 3 para sincronizar entre dispositivos.
         </div>
       )}
+
       {tab==='armado'    &&<ModArmado    toast={showToast} operarios={operarios} cons={cons} setCons={setCons}/>}
       {tab==='control'   &&<ModControl   toast={showToast} operarios={operarios} cons={cons} setCons={setCons} sincronizar={sincronizar}/>}
       {tab==='recepcion' &&<ModRecepcion toast={showToast} operarios={operarios}/>}
