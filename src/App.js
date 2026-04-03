@@ -556,32 +556,43 @@ function ModOperarios({operarios,setOperarios,toast}){
 // ═══════════════════════════════════════════════════════════════
 // MÓDULO RECEPCIÓN
 // ═══════════════════════════════════════════════════════════════
-function ModRecepcion({toast,operarios}){
-  const[prods,setProds]=useDB('rosarc_venc',[]);
-  const[form,sf]=useState({nombre:'',codigo:'',cat:'Galletitas',fecha:'',cantidad:1,operario:''});
-  const[filter,sfil]=useState('todos');
-  const[search,ss]=useState('');
-  const[loading,sl]=useState(false);
-  const[preview,sp]=useState(null);
-  const[showF,ssf]=useState(false);
-  const cats=['Galletitas','Caramelos','Snacks','Chocolates','Bebidas','Lácteos','Otro'];
+function handleXLS(e){
+  const file = e.target.files[0];
+  if (!file) return;
 
-  async function handleImg(e){
-    const f=e.target.files[0];if(!f)return;
-    const reader=new FileReader();
-    reader.onload=async ev=>{
-      sp(ev.target.result);sl(true);ssf(true);
-      try{
-        const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:400,messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:f.type||"image/jpeg",data:ev.target.result.split(',')[1]}},{type:"text",text:'Analizá esta caja. SOLO JSON sin markdown:\n{"nombre":"","codigo":"","categoria":"Galletitas|Caramelos|Snacks|Chocolates|Bebidas|Lácteos|Otro","fecha_vencimiento":"YYYY-MM-DD"}'}]}]})});
-        const d=await res.json();
-        const p=JSON.parse(d.content.map(i=>i.text||'').join('').replace(/```json|```/g,'').trim());
-        sf(x=>({...x,nombre:p.nombre||'',codigo:p.codigo||'',cat:p.categoria||'Otro',fecha:p.fecha_vencimiento||''}));
-        toast('✅ IA extrajo los datos');
-      }catch{toast('⚠️ Completá manualmente','error');}
-      finally{sl(false);}
-    };reader.readAsDataURL(f);
-  }
+  setFN(file.name);
 
+  const reader = new FileReader();
+
+  reader.onload = (evt) => {
+    try {
+      const data = new Uint8Array(evt.target.result);
+
+      const workbook = XLSX.read(data, { type: "array" });
+
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+      // Convertimos a formato tipo CSV (texto)
+      const json = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+      const text = json.map(row => row.join(',')).join('\n');
+
+      // 🔥 ACA sigue tu lógica original
+      const parsed = parseXLS(text);
+
+      setXLS(parsed);
+
+      toast("✅ Archivo cargado correctamente");
+
+    } catch (err) {
+      console.error(err);
+      toast("❌ Error al leer el archivo", "error");
+    }
+  };
+
+  reader.readAsArrayBuffer(file); // 👈 clave (antes era readAsText)
+}
+🧠 QUÉ HICI
   function add(){
     if(!form.nombre||!form.fecha){toast('⚠️ Nombre y fecha requeridos','error');return;}
     setProds(ps=>[...ps,{id:Date.now(),...form,fechaRegistro:todayStr()}]);
