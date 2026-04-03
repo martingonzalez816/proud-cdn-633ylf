@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import * as XLSX from "xlsx";
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyFgyn7X_rDZ_qboQwoZatRFttzlvnYhmxWU55xlyQHVsJuKSU2QrTY7ZGx8lvqjOQ/exec";
 
