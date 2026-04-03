@@ -687,10 +687,13 @@ function ModArmado({toast,operarios,cons,setCons}){
   const[fHora,sfh]=useState(nowTime());
   const[fOps,sfo]=useState([]);
   const[fCtrl,sfc]=useState('');
-  const[xlsData,setXLS]=useState(XLS_DEFAULT);
-  const[fileName,setFN]=useState('Tanda 4 — #82569 (XLS por defecto)');
+  // FIX: arrancar sin datos precargados
+  const[xlsData,setXLS]=useState({sections:[],numero:'',fecha:''});
+  const[fileName,setFN]=useState('');
   const[tick,setTick]=useState(0);
   useEffect(()=>{const t=setInterval(()=>setTick(x=>x+1),5000);return()=>clearInterval(t);},[]);
+
+  const xlsCargado=xlsData.sections.length>0;
 
   // ── Leer XLS/CSV real ──────────────────────────────────────
   function handleXLS(e){
@@ -713,18 +716,19 @@ function ModArmado({toast,operarios,cons,setCons}){
           toast(msg);
         }else{
           toast('⚠️ No se encontraron productos. Verificá que sea el XLS correcto.','error');
-          setXLS(XLS_DEFAULT);sfn(XLS_DEFAULT.numero);sff(XLS_DEFAULT.fecha);
+          setXLS({sections:[],numero:'',fecha:''});sfn('');
         }
       }catch(err){
         toast('⚠️ Error leyendo el archivo.','error');
-        setXLS(XLS_DEFAULT);sfn(XLS_DEFAULT.numero);
+        setXLS({sections:[],numero:'',fecha:''});sfn('');
       }
     };reader.readAsText(file,'utf-8');
   }
 
-  const totalPiq=xlsData.sections.reduce((a,s)=>a+s.products.length,0);
+  const totalPiq=(xlsData.sections||[]).reduce((a,s)=>a+s.products.length,0);
 
   function crear(){
+    if(!xlsCargado){toast('⚠️ Primero cargá el archivo XLS','error');return;}
     if(!fNum){toast('⚠️ Ingresá el número de consolidado','error');return;}
     if(fOps.length===0){toast('⚠️ Seleccioná al menos 1 operario','error');return;}
     const now=Date.now();
@@ -790,16 +794,20 @@ function ModArmado({toast,operarios,cons,setCons}){
           <input type="file" accept=".xls,.xlsx,.csv,.txt" style={{display:'none'}} onChange={handleXLS}/>
         </label>
         <div style={{marginTop:'10px',padding:'10px 12px',background:C.surf2,borderRadius:'8px',display:'flex',alignItems:'center',gap:'10px'}}>
-          <span style={{fontSize:'18px'}}>📄</span>
+          <span style={{fontSize:'18px'}}>{xlsCargado?'📄':'📂'}</span>
           <div style={{flex:1}}>
-            <div style={{fontSize:'12px',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{fileName}</div>
-            <div style={{fontSize:'10px',color:C.muted}}>{totalPiq} productos · {xlsData.sections.length} divisiones</div>
+            <div style={{fontSize:'12px',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:xlsCargado?C.text:C.muted}}>
+              {xlsCargado?fileName:'Ningún archivo cargado'}
+            </div>
+            <div style={{fontSize:'10px',color:C.muted}}>
+              {xlsCargado?`${totalPiq} productos · ${xlsData.sections.length} divisiones`:'Seleccioná el XLS para continuar'}
+            </div>
           </div>
-          <span style={pill(C.green)}>✓ Listo</span>
+          {xlsCargado&&<span style={pill(C.green)}>✓ Listo</span>}
         </div>
-        <div style={{marginTop:'8px',display:'flex',gap:'5px',flexWrap:'wrap'}}>
+        {xlsCargado&&<div style={{marginTop:'8px',display:'flex',gap:'5px',flexWrap:'wrap'}}>
           {xlsData.sections.map(s=><span key={s.name} style={pill(C.blue,{fontSize:'9px'})}>{s.name} ({s.products.length})</span>)}
-        </div>
+        </div>}
       </div>
 
       {/* Datos del consolidado */}
@@ -856,8 +864,10 @@ function ModArmado({toast,operarios,cons,setCons}){
     <div style={BS}>
       <button style={btn({background:`linear-gradient(135deg,${C.accent},#5b21b6)`,color:'#fff',width:'100%',fontSize:'14px',padding:'13px'})}
         onClick={()=>{
-          setXLS(XLS_DEFAULT);setFN('Tanda 4 — #82569 (XLS por defecto)');
-          sfn(XLS_DEFAULT.numero);sff(XLS_DEFAULT.fecha||todayStr());sfh(nowTime());sfo([]);sfc('');
+          // FIX: resetear todo a vacío al crear nuevo
+          setXLS({sections:[],numero:'',fecha:''});
+          setFN('');
+          sfn('');sff(todayStr());sfh(nowTime());sfo([]);sfc('');
           setScr('setup');
         }}>
         + Nuevo Consolidado
