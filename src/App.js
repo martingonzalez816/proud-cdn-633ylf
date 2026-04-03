@@ -812,7 +812,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
         <div style={secTit}>📁 CARGAR ARCHIVO XLS</div>
         <label style={{...btn({background:`linear-gradient(135deg,${C.accent},#5b21b6)`,color:'#fff',width:'100%',fontSize:'14px',padding:'14px'}),cursor:'pointer'}}>
           📂 Seleccionar archivo .xls / .xlsx / .csv
-          <input type="file" accept=".xls,.xlsx,.csv,.txt" style={{display:'none'}} onChange={leleXLS}/>
+          <input type="file" accept=".xls,.xlsx,.csv,.txt" style={{display:'none'}} onChange={XLSX}/>
         </label>
         <div style={{marginTop:'10px',padding:'10px 12px',background:C.surf2,borderRadius:'8px',display:'flex',alignItems:'center',gap:'10px'}}>
           <span style={{fontSize:'18px'}}>{xlsCargado?'📄':'📂'}</span>
