@@ -97,9 +97,17 @@ const pill=(color,x={})=>({display:'inline-flex',alignItems:'center',padding:'2p
 const BS={flex:1,padding:'16px',maxWidth:'860px',width:'100%',margin:'0 auto',display:'flex',flexDirection:'column',gap:'14px',overflowY:'auto'};
 
 // ─── PARSER XLS REAL ─────────────────────────────────────────
-// Parsea el CSV generado por el XLS de la distribuidora
-// Col[0]=pasillo, [1]=codigo, [2]=desc, [3]=qty_orig(D→ignorar),
-// [4]=unit_orig(E→ignorar), [5]=bu_count, [6]="BU", [7]=final_qty, [8]=final_unit
+// Soporta DOS formatos de XLS de la distribuidora:
+//
+// FORMATO A (Tanda 3/4): fila 0 empieza con "Ros-ArC"
+//   col[3]=número consolidado, col[6]=fecha DD/MM/YYYY
+//
+// FORMATO B (Tanda 2): fila 0 empieza con "Ubicacion"
+//   col[3]=fecha DD/MM/YYYY, sin número → usuario lo ingresa manual
+//
+// Productos en ambos: col[0]=pasillo, [1]=codigo, [2]=desc,
+//   [3]=qty_orig(ignorar D), [4]=unit_orig(ignorar E),
+//   [5]=bu_count, [6]="BU", [7]=final_qty, [8]=final_unit
 function parseXLS(text){
   const lines=text.split('\n').map(l=>l.split(',').map(c=>c.replace(/^"|"$/g,'').trim()));
   let numero='', fecha='';
@@ -110,37 +118,42 @@ function parseXLS(text){
     if(!row||!row[0])continue;
     const first=row[0];
 
-    // Fila 0: encabezado con número y fecha
-    if(i===0&&(first==='Ros-ArC'||first.includes('Ros'))){
-      numero=row[3]||'';
-      // fecha: col[6] formato DD/MM/YYYY → convertir a YYYY-MM-DD
-      const fd=row[6]||'';
-      if(fd&&fd.includes('/')){const p=fd.split('/');fecha=`${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;}
-      else fecha=fd;
+    // ── FILA 0: detectar formato y extraer número/fecha ──────
+    if(i===0){
+      if(first==='Ros-ArC'||first.includes('Ros-ArC')||first==='T4'||first==='T3'){
+        // FORMATO A: número en col[3], fecha en col[6] DD/MM/YYYY
+        numero=row[3]||'';
+        const fd=row[6]||'';
+        if(fd&&fd.includes('/')){const p=fd.split('/');fecha=`${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;}
+        else fecha=fd;
+      } else if(first==='Ubicacion'||first==='Ubicación'){
+        // FORMATO B: fecha en col[3] DD/MM/YYYY, sin número
+        numero=''; // usuario lo ingresa manualmente
+        const fd=row[3]||'';
+        if(fd&&fd.includes('/')){const p=fd.split('/');fecha=`${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;}
+        else fecha=todayStr();
+      }
       continue;
     }
 
-    // Sección / división
-    const isSection=(first.startsWith('DIV')||first.startsWith('CHOCOLATES')||first.startsWith('COMESTIBLES'))&&(!row[1]||row[1]==='');
-    if(isSection){
+    // Saltear filas de encabezado secundario
+    if(first==='Grupo Segmento Evento:')continue;
+
+    // ── SECCIÓN / DIVISIÓN ───────────────────────────────────
+    const sinCol1=!row[1]||row[1]==='';
+    const isDiv  =first.startsWith('DIV')||first.startsWith('CHOCOLATES')||first.startsWith('COMESTIBLES');
+    const isNamed=first.includes('ARCOR')||first.includes('BAGLEY')||first.includes('CAMPAGNOLA');
+    if((isDiv||isNamed)&&sinCol1){
       if(current)sections.push(current);
       current={name:first,products:[],total_bu:'0'};
       continue;
     }
 
-    // Segunda sección tipo "CHOCOLATES ARCOR J.V." con espacio en col[1]
-    const isSection2=(first.includes('ARCOR')||first.includes('BAGLEY')||first==='Grupo Segmento Evento:')&&(!row[1]||row[1]==='');
-    if(isSection2&&first!=='Grupo Segmento Evento:'){
-      if(current)sections.push(current);
-      current={name:first,products:[],total_bu:'0'};
-      continue;
-    }
-
-    // Total BU
+    // ── TOTALES (ignorar) ────────────────────────────────────
     if(row[2]&&row[2].includes('Total en BU')){if(current)current.total_bu=row[4]||'0';continue;}
-    if(row[2]&&row[2].includes('Total en ')&&!row[2].includes('BU'))continue;
+    if(row[2]&&row[2].includes('Total en '))continue;
 
-    // Producto: col[1] es código numérico
+    // ── PRODUCTO: col[1] es código numérico ──────────────────
     if(current&&row[1]&&/^\d+$/.test(row[1])&&row[2]){
       current.products.push({
         id:`${(row[0]||'x').replace(/[^a-z0-9]/gi,'')}-${row[1]}-${i}`,
@@ -148,14 +161,14 @@ function parseXLS(text){
         codigo:row[1],
         descripcion:row[2],
         bu:row[5]||'0',
-        qty:row[7]||row[3]||'0',   // final_qty (col 7) → cantidad a armar
-        unit:row[8]||row[4]||'UN', // final_unit (col 8)
+        qty:row[7]||row[3]||'0',
+        unit:row[8]||row[4]||'UN',
       });
     }
   }
   if(current)sections.push(current);
 
-  const result=sections.filter(s=>s.products.length>0&&s.name!=='Grupo Segmento Evento:');
+  const result=sections.filter(s=>s.products.length>0);
   return{sections:result,numero,fecha};
 }
 
@@ -690,16 +703,20 @@ function ModArmado({toast,operarios,cons,setCons}){
         if(sections.length>0){
           const xlsDate=fecha||todayStr();
           setXLS({sections,numero,fecha:xlsDate});
-          sfn(numero);  // ← número automático desde D1
+          if(numero)sfn(numero);
+          else sfn(''); // Formato B: usuario ingresa el número manualmente
           if(fecha)sff(xlsDate);
           const total=sections.reduce((a,s)=>a+s.products.length,0);
-          toast(`✅ ${file.name} — ${total} productos en ${sections.length} divisiones. Nro: #${numero}`);
+          const msg=numero
+            ? `✅ ${file.name} — ${total} productos · #${numero}`
+            : `✅ ${file.name} — ${total} productos · Ingresá el número de consolidado`;
+          toast(msg);
         }else{
-          toast('⚠️ No se encontraron productos. Verificá que sea el XLS de la distribuidora.','error');
+          toast('⚠️ No se encontraron productos. Verificá que sea el XLS correcto.','error');
           setXLS(XLS_DEFAULT);sfn(XLS_DEFAULT.numero);sff(XLS_DEFAULT.fecha);
         }
       }catch(err){
-        toast('⚠️ Error leyendo el archivo. Usando datos de muestra.','error');
+        toast('⚠️ Error leyendo el archivo.','error');
         setXLS(XLS_DEFAULT);sfn(XLS_DEFAULT.numero);
       }
     };reader.readAsText(file,'utf-8');
@@ -790,8 +807,8 @@ function ModArmado({toast,operarios,cons,setCons}){
         <div style={secTit}>📋 DATOS DEL CONSOLIDADO</div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'9px',marginBottom:'9px'}}>
           <div>
-            <label style={lbl}>Nro. Consolidado <span style={{color:C.green,fontSize:'9px'}}>(desde XLS)</span></label>
-            <input style={{...inp,borderColor:C.green}} value={fNum} onChange={e=>sfn(e.target.value)} placeholder="82569"/>
+            <label style={lbl}>Nro. Consolidado <span style={{color:fNum?C.green:C.orange,fontSize:'9px'}}>{fNum?'(desde XLS)':'(ingresá el número)'}</span></label>
+            <input style={{...inp,borderColor:fNum?C.green:C.orange}} value={fNum} onChange={e=>sfn(e.target.value)} placeholder="Ingresá el número..."/>
           </div>
           <div><label style={lbl}>Fecha</label><input type="date" style={inp} value={fFecha} onChange={e=>sff(e.target.value)}/></div>
         </div>
