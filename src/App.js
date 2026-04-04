@@ -1844,16 +1844,32 @@ function ErrModal({ onConfirm, onCancel }) {
   );
 }
 
-// ─── DOCUMENTO A4 ─────────────────────────────────────────────
-// Tabla: Pasillo · Código · Descripción · BU · Final · UN · ✓
-// Sin columnas D (qty original) y E (unit original)
 function PrintDoc({ cons, firmaData }) {
   if (!cons) return null;
   const ops = cons.activeOps || [];
   const errors = cons.lines.filter((l) => l.estado === "error");
   const okLines = cons.lines.filter((l) => l.estado === "ok");
-  const sections = [...new Set(cons.lines.map((l) => l.seccion))];
   const ctrl = firmaData?.controlador || cons.controlador || "";
+
+  // Inyectar CSS de impresión en el head del documento
+  useEffect(() => {
+    const style = document.createElement("style");
+    style.id = "rosarc-print-style";
+    style.innerHTML = `
+      @media print {
+        .op-bloque { display: block !important; page-break-before: always !important; break-before: page !important; }
+        .op-bloque-first { display: block !important; page-break-before: auto !important; break-before: auto !important; }
+      }
+    `;
+    if (!document.getElementById("rosarc-print-style")) {
+      document.head.appendChild(style);
+    }
+    return () => {
+      const el = document.getElementById("rosarc-print-style");
+      if (el) el.remove();
+    };
+  }, []);
+
   return (
     <div
       style={{
@@ -1867,7 +1883,7 @@ function PrintDoc({ cons, firmaData }) {
         boxShadow: "0 2px 20px rgba(0,0,0,.15)",
       }}
     >
-      {/* Header */}
+      {/* Header — aparece solo en la primera hoja */}
       <div
         style={{
           display: "flex",
@@ -1938,7 +1954,8 @@ function PrintDoc({ cons, firmaData }) {
           ))}
         </div>
       </div>
-      {/* Operarios */}
+
+      {/* Resumen operarios */}
       {ops.length > 0 && (
         <div
           style={{
@@ -1987,7 +2004,6 @@ function PrintDoc({ cons, firmaData }) {
               <span style={{ fontSize: "6.5pt", fontWeight: 600 }}>
                 {op.nombre}
               </span>
-
               {op.startTime && (
                 <span style={{ fontSize: "5.5pt", color: "#888" }}>
                   {" "}
@@ -2003,7 +2019,8 @@ function PrintDoc({ cons, firmaData }) {
           ))}
         </div>
       )}
-      {/* Resumen si hay control */}
+
+      {/* Resumen control */}
       {(okLines.length > 0 || errors.length > 0) && (
         <div style={{ display: "flex", gap: "7pt", marginBottom: "4mm" }}>
           {[
@@ -2037,6 +2054,7 @@ function PrintDoc({ cons, firmaData }) {
           ))}
         </div>
       )}
+
       {/* Errores */}
       {errors.length > 0 && (
         <div
@@ -2083,7 +2101,8 @@ function PrintDoc({ cons, firmaData }) {
           ))}
         </div>
       )}
-      {/* Tabla por operario — una sección por operario */}
+
+      {/* Una sección por operario — cada una en su propia hoja al imprimir */}
       {(cons.activeOps || []).map((op, opIdx) => {
         const divOp = op.divisiones || [];
         const lineasOp =
@@ -2095,8 +2114,9 @@ function PrintDoc({ cons, firmaData }) {
         return (
           <div
             key={op.id}
-            style={{ pageBreakBefore: opIdx > 0 ? "always" : "auto" }}
+            className={opIdx > 0 ? "op-bloque" : "op-bloque-first"}
           >
+            {/* Encabezado del operario */}
             <div
               style={{
                 display: "flex",
@@ -2129,6 +2149,8 @@ function PrintDoc({ cons, firmaData }) {
                 </div>
               </div>
             </div>
+
+            {/* Tablas por sección */}
             {secsOp.map((sec) => {
               const sl = lineasOp.filter((l) => l.seccion === sec);
               const secOk = sl.filter((l) => l.estado === "ok").length;
@@ -2308,6 +2330,8 @@ function PrintDoc({ cons, firmaData }) {
                 </div>
               );
             })}
+
+            {/* Firma del operario al pie de su sección */}
             <div
               style={{
                 marginTop: "4mm",
@@ -2379,144 +2403,150 @@ function PrintDoc({ cons, firmaData }) {
           </div>
         );
       })}
-      {/* Firmas */}
-      <div
-        style={{
-          marginTop: "5mm",
-          border: "1pt solid #C0392B",
-          borderRadius: "3pt",
-          padding: "5pt 8pt",
-        }}
-      >
+
+      {/* Sección de control — última hoja */}
+      <div className="op-bloque">
         <div
           style={{
-            fontSize: "5.5pt",
-            color: "#C0392B",
-            letterSpacing: "2px",
-            textTransform: "uppercase",
-            fontWeight: 700,
-            marginBottom: "5pt",
+            marginTop: "5mm",
+            border: "1pt solid #C0392B",
+            borderRadius: "3pt",
+            padding: "5pt 8pt",
           }}
         >
-          ✓ Control y Firma
-        </div>
-        <div
-          style={{
-            display: "flex",
-            gap: "9pt",
-            marginBottom: ops.length > 0 ? "6pt" : 0,
-          }}
-        >
-          <div style={{ flex: 1 }}>
-            <div
-              style={{
-                fontSize: "5pt",
-                color: "#888",
-                textTransform: "uppercase",
-              }}
-            >
-              Controlador
-            </div>
-            <div
-              style={{
-                borderBottom: "1pt solid #ccc",
-                minHeight: "12pt",
-                fontSize: "10pt",
-                fontWeight: 700,
-              }}
-            >
-              {ctrl}
-            </div>
+          <div
+            style={{
+              fontSize: "5.5pt",
+              color: "#C0392B",
+              letterSpacing: "2px",
+              textTransform: "uppercase",
+              fontWeight: 700,
+              marginBottom: "5pt",
+            }}
+          >
+            ✓ Control y Firma
           </div>
-          <div style={{ flex: 1 }}>
-            <div
-              style={{
-                fontSize: "5pt",
-                color: "#888",
-                textTransform: "uppercase",
-              }}
-            >
-              Hora
-            </div>
-            <div
-              style={{
-                borderBottom: "1pt solid #ccc",
-                minHeight: "12pt",
-                fontSize: "10pt",
-                fontWeight: 700,
-              }}
-            >
-              {firmaData?.ts ? fHora(firmaData.ts) : "___:___"}
-            </div>
-          </div>
-          <div style={{ flex: 1 }}>
-            <div
-              style={{
-                fontSize: "5pt",
-                color: "#888",
-                textTransform: "uppercase",
-              }}
-            >
-              Firma
-            </div>
-            {firmaData?.firma ? (
-              <img
-                src={firmaData.firma}
-                alt="firma"
-                style={{
-                  height: "28pt",
-                  background: "#f8f8f8",
-                  borderRadius: "2pt",
-                  border: "1pt solid #ddd",
-                }}
-              />
-            ) : (
+          <div
+            style={{
+              display: "flex",
+              gap: "9pt",
+              marginBottom: ops.length > 0 ? "6pt" : 0,
+            }}
+          >
+            <div style={{ flex: 1 }}>
               <div
-                style={{ borderBottom: "1pt solid #bbb", minHeight: "22pt" }}
-              />
-            )}
-          </div>
-        </div>
-        {ops.length > 0 && (
-          <div style={{ display: "flex", gap: "8pt" }}>
-            {ops.map((op) => (
-              <div key={op.id} style={{ flex: 1 }}>
-                <div
-                  style={{
-                    fontSize: "5pt",
-                    color: op.color,
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {op.nombre}
-                </div>
-                <div
-                  style={{ borderBottom: "1pt solid #bbb", minHeight: "20pt" }}
-                />
+                style={{
+                  fontSize: "5pt",
+                  color: "#888",
+                  textTransform: "uppercase",
+                }}
+              >
+                Controlador
               </div>
-            ))}
+              <div
+                style={{
+                  borderBottom: "1pt solid #ccc",
+                  minHeight: "12pt",
+                  fontSize: "10pt",
+                  fontWeight: 700,
+                }}
+              >
+                {ctrl}
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div
+                style={{
+                  fontSize: "5pt",
+                  color: "#888",
+                  textTransform: "uppercase",
+                }}
+              >
+                Hora
+              </div>
+              <div
+                style={{
+                  borderBottom: "1pt solid #ccc",
+                  minHeight: "12pt",
+                  fontSize: "10pt",
+                  fontWeight: 700,
+                }}
+              >
+                {firmaData?.ts ? fHora(firmaData.ts) : "___:___"}
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div
+                style={{
+                  fontSize: "5pt",
+                  color: "#888",
+                  textTransform: "uppercase",
+                }}
+              >
+                Firma
+              </div>
+              {firmaData?.firma ? (
+                <img
+                  src={firmaData.firma}
+                  alt="firma"
+                  style={{
+                    height: "28pt",
+                    background: "#f8f8f8",
+                    borderRadius: "2pt",
+                    border: "1pt solid #ddd",
+                  }}
+                />
+              ) : (
+                <div
+                  style={{ borderBottom: "1pt solid #bbb", minHeight: "22pt" }}
+                />
+              )}
+            </div>
           </div>
-        )}
-      </div>
-      <div
-        style={{
-          marginTop: "4mm",
-          paddingTop: "3mm",
-          borderTop: "1pt solid #ddd",
-          display: "flex",
-          justifyContent: "space-between",
-          fontSize: "5.5pt",
-          color: "#aaa",
-        }}
-      >
-        <span>Ros-ArC · #{cons.numero}</span>
-        <span>
-          {new Date().toLocaleDateString("es-AR")}{" "}
-          {new Date().toLocaleTimeString("es-AR", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
-        </span>
+          {ops.length > 0 && (
+            <div style={{ display: "flex", gap: "8pt" }}>
+              {ops.map((op) => (
+                <div key={op.id} style={{ flex: 1 }}>
+                  <div
+                    style={{
+                      fontSize: "5pt",
+                      color: op.color,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    {op.nombre}
+                  </div>
+                  <div
+                    style={{
+                      borderBottom: "1pt solid #bbb",
+                      minHeight: "20pt",
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div
+          style={{
+            marginTop: "4mm",
+            paddingTop: "3mm",
+            borderTop: "1pt solid #ddd",
+            display: "flex",
+            justifyContent: "space-between",
+            fontSize: "5.5pt",
+            color: "#aaa",
+          }}
+        >
+          <span>Ros-ArC · #{cons.numero}</span>
+          <span>
+            {new Date().toLocaleDateString("es-AR")}{" "}
+            {new Date().toLocaleTimeString("es-AR", {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -3412,6 +3442,12 @@ function ModArmado({ toast, operarios, cons, setCons }) {
     const now = Date.now();
     const c = cons.find((x) => x.id === consId);
     const op = c?.activeOps.find((o) => o.id === opId);
+    const startTs = Number(op?.startTime || 0);
+    const duracionMin = startTs > 0 ? Math.round((now - startTs) / 60000) : 0;
+    const piqueos =
+      op?.piqueos ||
+      Math.round((c?.piqueos || 0) / Math.max((c?.activeOps || []).length, 1));
+
     setCons((cs) =>
       cs.map((x) =>
         x.id !== consId
@@ -3426,21 +3462,22 @@ function ModArmado({ toast, operarios, cons, setCons }) {
             }
       )
     );
+
     if (op) {
-      toast(`✅ ${op.nombre} finalizó`);
+      toast(`✅ ${op.nombre} finalizó · ${duracionMin}min · ${piqueos} piq`);
       api.post("finalizar_operario", {
         consId: String(consId),
         numero: c?.numero,
         fecha: c?.fecha,
         nombre: op.nombre,
         codigo: op.codigo || "",
-        horaInicio: fHora(op.startTime),
+        horaInicio: startTs > 0 ? fHora(startTs) : "—",
         horaFin: fHora(now),
-        startTime: op.startTime,
+        startTime: startTs,
         endTime: now,
-        piqueos: Math.round(
-          (c?.piqueos || 0) / Math.max((c?.activeOps || []).length, 1)
-        ),
+        duracion: duracionMin,
+        piqueos,
+        divisiones: (op.divisiones || []).join(", "),
       });
     }
   }
