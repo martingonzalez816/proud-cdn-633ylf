@@ -2083,181 +2083,299 @@ function PrintDoc({ cons, firmaData }) {
           ))}
         </div>
       )}
-      {/* Tabla por sección */}
-      {sections.map((sec) => {
-        const sl = cons.lines.filter((l) => l.seccion === sec);
-        const secOk = sl.filter((l) => l.estado === "ok").length;
+      {/* Tabla por operario — una sección por operario */}
+      {(cons.activeOps || []).map((op, opIdx) => {
+        const divOp = op.divisiones || [];
+        const lineasOp =
+          divOp.length > 0
+            ? cons.lines.filter((l) => divOp.includes(l.seccion))
+            : cons.lines;
+        const secsOp = [...new Set(lineasOp.map((l) => l.seccion))];
+        if (lineasOp.length === 0) return null;
         return (
-          <div key={sec} style={{ marginBottom: "3.5mm" }}>
+          <div
+            key={op.id}
+            style={{ pageBreakBefore: opIdx > 0 ? "always" : "auto" }}
+          >
             <div
               style={{
-                background: "#C0392B",
-                color: "#fff",
-                padding: "2.5pt 5pt",
-                fontSize: "8pt",
-                fontWeight: 700,
-                letterSpacing: "2px",
-                textTransform: "uppercase",
-                marginBottom: "1pt",
                 display: "flex",
-                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "8pt",
+                marginBottom: "4mm",
+                paddingBottom: "2mm",
+                borderBottom: `2pt solid ${op.color}`,
               }}
             >
-              <span>{sec}</span>
-              <span style={{ fontSize: "6pt", opacity: 0.8 }}>
-                {secOk > 0 ? `${secOk}/${sl.length} ✓` : sl.length + " líneas"}
-              </span>
+              <div
+                style={{
+                  width: "14pt",
+                  height: "14pt",
+                  borderRadius: "50%",
+                  background: op.color,
+                }}
+              />
+              <div>
+                <div
+                  style={{ fontSize: "11pt", fontWeight: 900, color: op.color }}
+                >
+                  {op.nombre}
+                </div>
+                <div style={{ fontSize: "6pt", color: "#888" }}>
+                  {lineasOp.length} líneas ·{" "}
+                  {divOp.join(" · ") || "Todas las divisiones"}
+                  {op.startTime ? ` · Inicio: ${fHora(op.startTime)}` : ""}
+                  {op.endTime ? ` → ${fHora(op.endTime)}` : ""}
+                </div>
+              </div>
             </div>
-            <table
+            {secsOp.map((sec) => {
+              const sl = lineasOp.filter((l) => l.seccion === sec);
+              const secOk = sl.filter((l) => l.estado === "ok").length;
+              return (
+                <div key={sec} style={{ marginBottom: "3.5mm" }}>
+                  <div
+                    style={{
+                      background: op.color,
+                      color: "#fff",
+                      padding: "2.5pt 5pt",
+                      fontSize: "8pt",
+                      fontWeight: 700,
+                      letterSpacing: "2px",
+                      textTransform: "uppercase",
+                      marginBottom: "1pt",
+                      display: "flex",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span>{sec}</span>
+                    <span style={{ fontSize: "6pt", opacity: 0.8 }}>
+                      {secOk > 0
+                        ? `${secOk}/${sl.length} ✓`
+                        : sl.length + " líneas"}
+                    </span>
+                  </div>
+                  <table
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      fontSize: "7pt",
+                    }}
+                  >
+                    <thead>
+                      <tr style={{ background: "#f0f0f0" }}>
+                        {[
+                          "PASILLO",
+                          "CÓDIGO",
+                          "DESCRIPCIÓN",
+                          "BU",
+                          "FINAL",
+                          "UN",
+                          "✓",
+                        ].map((h) => (
+                          <th
+                            key={h}
+                            style={{
+                              fontSize: "5.5pt",
+                              fontWeight: 700,
+                              letterSpacing: "1px",
+                              textTransform: "uppercase",
+                              color: "#555",
+                              padding: "2pt 3pt",
+                              textAlign: h === "FINAL" ? "right" : "left",
+                              borderBottom: "1pt solid #ccc",
+                            }}
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sl.map((p, i) => (
+                        <tr
+                          key={p.id}
+                          style={{ background: i % 2 ? "#fafafa" : "#fff" }}
+                        >
+                          <td
+                            style={{
+                              padding: "2.5pt 3pt",
+                              color: "#999",
+                              fontSize: "6.5pt",
+                              borderBottom: ".5pt solid #ebebeb",
+                              textAlign: "center",
+                            }}
+                          >
+                            {p.pasillo || "—"}
+                          </td>
+                          <td
+                            style={{
+                              padding: "2.5pt 3pt",
+                              color: "#999",
+                              fontSize: "6.5pt",
+                              borderBottom: ".5pt solid #ebebeb",
+                            }}
+                          >
+                            {p.codigo}
+                          </td>
+                          <td
+                            style={{
+                              padding: "2.5pt 3pt",
+                              fontWeight: 500,
+                              borderBottom: ".5pt solid #ebebeb",
+                            }}
+                          >
+                            {p.descripcion}
+                          </td>
+                          <td
+                            style={{
+                              padding: "2.5pt 3pt",
+                              textAlign: "center",
+                              fontWeight: 700,
+                              color: op.color,
+                              borderBottom: ".5pt solid #ebebeb",
+                            }}
+                          >
+                            {p.bu !== "0" ? p.bu : "—"}
+                          </td>
+                          <td
+                            style={{
+                              padding: "2.5pt 3pt",
+                              textAlign: "right",
+                              fontWeight: 700,
+                              fontSize: "8.5pt",
+                              borderBottom: ".5pt solid #ebebeb",
+                            }}
+                          >
+                            {p.qty}
+                          </td>
+                          <td
+                            style={{
+                              padding: "2.5pt 3pt",
+                              textAlign: "center",
+                              color: "#888",
+                              fontSize: "6.5pt",
+                              borderBottom: ".5pt solid #ebebeb",
+                            }}
+                          >
+                            {p.unit}
+                          </td>
+                          <td
+                            style={{
+                              padding: "2.5pt 3pt",
+                              textAlign: "center",
+                              borderBottom: ".5pt solid #ebebeb",
+                            }}
+                          >
+                            {p.estado === "ok" && (
+                              <span
+                                style={{
+                                  color: "#06d6a0",
+                                  fontWeight: 700,
+                                  fontSize: "9pt",
+                                }}
+                              >
+                                ✓
+                              </span>
+                            )}
+                            {p.estado === "error" && (
+                              <span
+                                style={{
+                                  color: "#FF4757",
+                                  fontWeight: 700,
+                                  fontSize: "6.5pt",
+                                }}
+                              >
+                                ✗{p.motivo ? ` ${p.motivo}` : ""}
+                              </span>
+                            )}
+                            {!p.estado && (
+                              <div
+                                style={{
+                                  width: "9pt",
+                                  height: "9pt",
+                                  border: "1pt solid #aaa",
+                                  borderRadius: "2pt",
+                                  display: "inline-block",
+                                }}
+                              />
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+            <div
               style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: "7pt",
+                marginTop: "4mm",
+                border: `1pt solid ${op.color}`,
+                borderRadius: "3pt",
+                padding: "4pt 7pt",
+                display: "flex",
+                gap: "12pt",
               }}
             >
-              <thead>
-                <tr style={{ background: "#f0f0f0" }}>
-                  {[
-                    "PASILLO",
-                    "CÓDIGO",
-                    "DESCRIPCIÓN",
-                    "BU",
-                    "FINAL",
-                    "UN",
-                    "✓",
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      style={{
-                        fontSize: "5.5pt",
-                        fontWeight: 700,
-                        letterSpacing: "1px",
-                        textTransform: "uppercase",
-                        color: "#555",
-                        padding: "2pt 3pt",
-                        textAlign: h === "FINAL" ? "right" : "left",
-                        borderBottom: "1pt solid #ccc",
-                      }}
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {sl.map((p, i) => (
-                  <tr
-                    key={p.id}
-                    style={{ background: i % 2 ? "#fafafa" : "#fff" }}
-                  >
-                    <td
-                      style={{
-                        padding: "2.5pt 3pt",
-                        color: "#999",
-                        fontSize: "6.5pt",
-                        borderBottom: ".5pt solid #ebebeb",
-                        textAlign: "center",
-                      }}
-                    >
-                      {p.pasillo || "—"}
-                    </td>
-                    <td
-                      style={{
-                        padding: "2.5pt 3pt",
-                        color: "#999",
-                        fontSize: "6.5pt",
-                        borderBottom: ".5pt solid #ebebeb",
-                      }}
-                    >
-                      {p.codigo}
-                    </td>
-                    <td
-                      style={{
-                        padding: "2.5pt 3pt",
-                        fontWeight: 500,
-                        borderBottom: ".5pt solid #ebebeb",
-                      }}
-                    >
-                      {p.descripcion}
-                    </td>
-                    <td
-                      style={{
-                        padding: "2.5pt 3pt",
-                        textAlign: "center",
-                        fontWeight: 700,
-                        color: "#C0392B",
-                        borderBottom: ".5pt solid #ebebeb",
-                      }}
-                    >
-                      {p.bu !== "0" ? p.bu : "—"}
-                    </td>
-                    <td
-                      style={{
-                        padding: "2.5pt 3pt",
-                        textAlign: "right",
-                        fontWeight: 700,
-                        fontSize: "8.5pt",
-                        borderBottom: ".5pt solid #ebebeb",
-                      }}
-                    >
-                      {p.qty}
-                    </td>
-                    <td
-                      style={{
-                        padding: "2.5pt 3pt",
-                        textAlign: "center",
-                        color: "#888",
-                        fontSize: "6.5pt",
-                        borderBottom: ".5pt solid #ebebeb",
-                      }}
-                    >
-                      {p.unit}
-                    </td>
-                    <td
-                      style={{
-                        padding: "2.5pt 3pt",
-                        textAlign: "center",
-                        borderBottom: ".5pt solid #ebebeb",
-                      }}
-                    >
-                      {p.estado === "ok" && (
-                        <span
-                          style={{
-                            color: "#06d6a0",
-                            fontWeight: 700,
-                            fontSize: "9pt",
-                          }}
-                        >
-                          ✓
-                        </span>
-                      )}
-                      {p.estado === "error" && (
-                        <span
-                          style={{
-                            color: "#FF4757",
-                            fontWeight: 700,
-                            fontSize: "6.5pt",
-                          }}
-                        >
-                          ✗{p.motivo ? ` ${p.motivo}` : ""}
-                        </span>
-                      )}
-                      {!p.estado && (
-                        <div
-                          style={{
-                            width: "9pt",
-                            height: "9pt",
-                            border: "1pt solid #aaa",
-                            borderRadius: "2pt",
-                            display: "inline-block",
-                          }}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+              <div style={{ flex: 1 }}>
+                <div
+                  style={{
+                    fontSize: "5pt",
+                    color: "#888",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Operario
+                </div>
+                <div
+                  style={{
+                    borderBottom: "1pt solid #ccc",
+                    minHeight: "16pt",
+                    fontSize: "10pt",
+                    fontWeight: 700,
+                    color: op.color,
+                  }}
+                >
+                  {op.nombre}
+                </div>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div
+                  style={{
+                    fontSize: "5pt",
+                    color: "#888",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Firma
+                </div>
+                <div
+                  style={{ borderBottom: "1pt solid #bbb", minHeight: "16pt" }}
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div
+                  style={{
+                    fontSize: "5pt",
+                    color: "#888",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Hora fin
+                </div>
+                <div
+                  style={{
+                    borderBottom: "1pt solid #ccc",
+                    minHeight: "16pt",
+                    fontSize: "10pt",
+                    fontWeight: 700,
+                  }}
+                >
+                  {op.endTime ? fHora(op.endTime) : "___:___"}
+                </div>
+              </div>
+            </div>
           </div>
         );
       })}
@@ -3114,6 +3232,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
   const [fHoraInicio, sfh] = useState(nowTime());
   const [fOps, sfo] = useState([]);
   const [fCtrl, sfc] = useState("");
+  const [fDivisiones, setFDivisiones] = useState({});
 
   const [xlsData, setXLS] = useState({
     sections: [],
@@ -3230,6 +3349,13 @@ function ModArmado({ toast, operarios, cons, setCons }) {
       toast("⚠️ Seleccioná al menos 1 operario", "error");
       return;
     }
+    const todasAsignadas = xlsData.sections.every((sec) =>
+      fOps.some((id) => (fDivisiones[id] || []).includes(sec.name))
+    );
+    if (!todasAsignadas) {
+      toast("⚠️ Asigná todas las divisiones antes de continuar", "error");
+      return;
+    }
     const now = Date.now();
     const lines = xlsData.sections.flatMap((sec) =>
       sec.products.map((p) => ({
@@ -3253,7 +3379,21 @@ function ModArmado({ toast, operarios, cons, setCons }) {
       piqueos: totalPiq,
       activeOps: fOps.map((id) => {
         const op = operarios.find((o) => o.id === id);
-        return { ...op, startTime: now, endTime: null, finished: false };
+        const divs = fDivisiones[id] || [];
+        const piqueos =
+          divs.length > 0
+            ? xlsData.sections
+                .filter((s) => divs.includes(s.name))
+                .reduce((a, s) => a + s.products.length, 0)
+            : Math.round(totalPiq / Math.max(fOps.length, 1));
+        return {
+          ...op,
+          startTime: now,
+          endTime: null,
+          finished: false,
+          divisiones: divs,
+          piqueos,
+        };
       }),
       startTime: now,
       finished: false,
@@ -3606,7 +3746,105 @@ function ModArmado({ toast, operarios, cons, setCons }) {
             ))}
           </div>
         </div>
-
+        {fOps.length > 0 && xlsCargado && (
+          <div style={card({ borderColor: C.blue })}>
+            <div style={secTit}>📋 ASIGNAR DIVISIONES POR OPERARIO</div>
+            {fOps.map((opId) => {
+              const op = operarios.find((o) => o.id === opId);
+              if (!op) return null;
+              const divs = fDivisiones[opId] || [];
+              const piqueos = xlsData.sections
+                .filter((s) => divs.includes(s.name))
+                .reduce((a, s) => a + s.products.length, 0);
+              return (
+                <div key={opId} style={{ marginBottom: "12px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "7px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: "24px",
+                          height: "24px",
+                          borderRadius: "50%",
+                          background: op.color,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: "11px",
+                          fontWeight: 700,
+                          color: "#fff",
+                        }}
+                      >
+                        {op.nombre.charAt(0)}
+                      </div>
+                      <span style={{ fontWeight: 700, fontSize: "13px" }}>
+                        {op.nombre}
+                      </span>
+                    </div>
+                    <span style={pill(divs.length > 0 ? op.color : C.muted)}>
+                      {piqueos} piqueos
+                    </span>
+                  </div>
+                  <div
+                    style={{ display: "flex", flexWrap: "wrap", gap: "5px" }}
+                  >
+                    {xlsData.sections.map((sec) => {
+                      const selec = divs.includes(sec.name);
+                      const asignadaAotro =
+                        !selec &&
+                        fOps.some(
+                          (otherId) =>
+                            otherId !== opId &&
+                            (fDivisiones[otherId] || []).includes(sec.name)
+                        );
+                      return (
+                        <button
+                          key={sec.name}
+                          disabled={asignadaAotro}
+                          style={btn({
+                            background: selec ? op.color : "transparent",
+                            color: selec
+                              ? "#fff"
+                              : asignadaAotro
+                              ? C.bord
+                              : C.muted,
+                            opacity: asignadaAotro ? 0.3 : 1,
+                            border: `1px solid ${selec ? op.color : C.bord}`,
+                            fontSize: "10px",
+                            padding: "4px 8px",
+                            borderRadius: "6px",
+                          })}
+                          onClick={() =>
+                            setFDivisiones((prev) => ({
+                              ...prev,
+                              [opId]: selec
+                                ? divs.filter((x) => x !== sec.name)
+                                : [...divs, sec.name],
+                            }))
+                          }
+                        >
+                          {sec.name} ({sec.products.length})
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
         <button
           style={btn({
             background: `linear-gradient(135deg,${C.green},#059669)`,
@@ -3655,6 +3893,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
           sfh(nowTime());
           sfo([]);
           sfc("");
+          setFDivisiones({});
           setScr("setup");
         }}
       >
