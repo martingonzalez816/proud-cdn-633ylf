@@ -3291,7 +3291,6 @@ function ModArmado({ toast, operarios, cons, setCons }) {
         const data = new Uint8Array(evt.target.result);
         const workbook = XLSX.read(data, { type: "array" });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        // Convertir a CSV y usar el parser existente que ya soporta ambos formatos
         console.log(
           "CELDAS:",
           "A1=",
@@ -3302,30 +3301,87 @@ function ModArmado({ toast, operarios, cons, setCons }) {
           sheet["D1"]?.v
         );
         const csv = XLSX.utils.sheet_to_csv(sheet);
-        // Leer B1 y D1 directo del binario (Excel 5.0 legacy)
         let prefijo = "",
           numero = "";
         try {
           const raw = evt.target.result;
           const bytes = new Uint8Array(raw);
-          // Buscar T2, T3, T4 en el binario
-          for (let i = 0; i < bytes.length - 2; i++) {
-            if (
-              bytes[i] === 0x54 &&
-              (bytes[i + 1] === 0x32 ||
-                bytes[i + 1] === 0x33 ||
-                bytes[i + 1] === 0x34) &&
-              bytes[i + 2] === 0x04
-            ) {
-              prefijo = String.fromCharCode(bytes[i], bytes[i + 1]);
-              // El número está 32 bytes después como double little-endian
-              const view = new DataView(raw, i + 32, 8);
-              const num = Math.round(view.getFloat64(0, true));
-              if (num > 10000 && num < 9999999) numero = String(num);
+          const rosarc = [0x52, 0x6f, 0x73, 0x2d, 0x41, 0x72, 0x43];
+          let encontrado = false;
+
+          // Buscar "Ros-ArC" en binario para prefijos 13/46/78/91/99/HEL
+          for (let i = 0; i < bytes.length - 300; i++) {
+            if (rosarc.every((b, j) => bytes[i + j] === b)) {
+              encontrado = true;
+              // Buscar prefijo: patrón 01 00 1d 00 XX 00 [string]
+              for (let j = i; j < Math.min(i + 300, bytes.length - 10); j++) {
+                if (
+                  bytes[j] === 0x01 &&
+                  bytes[j + 1] === 0x00 &&
+                  bytes[j + 2] === 0x1d &&
+                  bytes[j + 3] === 0x00
+                ) {
+                  const strLen = bytes[j + 4];
+                  if (strLen > 0 && strLen <= 5) {
+                    let s = "";
+                    for (let k = 0; k < strLen; k++)
+                      s += String.fromCharCode(bytes[j + 6 + k]);
+                    if (s.trim()) {
+                      prefijo = s.trim();
+                      break;
+                    }
+                  }
+                }
+              }
+              // Buscar número: patrón 03 02 0e 00 00 00 03 00 1e 00 [8 bytes double]
+              for (let j = i; j < Math.min(i + 300, bytes.length - 20); j++) {
+                if (
+                  bytes[j] === 0x03 &&
+                  bytes[j + 1] === 0x02 &&
+                  bytes[j + 2] === 0x0e &&
+                  bytes[j + 3] === 0x00 &&
+                  bytes[j + 4] === 0x00 &&
+                  bytes[j + 5] === 0x00 &&
+                  bytes[j + 6] === 0x03 &&
+                  bytes[j + 7] === 0x00 &&
+                  bytes[j + 8] === 0x1e &&
+                  bytes[j + 9] === 0x00
+                ) {
+                  const view = new DataView(raw, j + 10, 8);
+                  const num = Math.round(view.getFloat64(0, true));
+                  if (num > 10000 && num < 999999) {
+                    numero = String(num);
+                    break;
+                  }
+                }
+              }
               break;
             }
           }
+
+          // Fallback T2/T3/T4 si no encontró Ros-ArC
+          if (!encontrado || !numero || !prefijo) {
+            for (let i = 0; i < bytes.length - 2; i++) {
+              if (
+                bytes[i] === 0x54 &&
+                (bytes[i + 1] === 0x32 ||
+                  bytes[i + 1] === 0x33 ||
+                  bytes[i + 1] === 0x34) &&
+                bytes[i + 2] === 0x04
+              ) {
+                if (!prefijo)
+                  prefijo = String.fromCharCode(bytes[i], bytes[i + 1]);
+                if (!numero) {
+                  const view = new DataView(raw, i + 32, 8);
+                  const num = Math.round(view.getFloat64(0, true));
+                  if (num > 1000 && num < 9999999) numero = String(num);
+                }
+                break;
+              }
+            }
+          }
         } catch (e) {}
+
         const { sections, fecha } = parseXLS(csv);
         if (sections.length > 0) {
           const xlsDate = fecha || todayStr();
