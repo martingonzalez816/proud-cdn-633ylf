@@ -1843,7 +1843,6 @@ function ErrModal({ onConfirm, onCancel }) {
     </div>
   );
 }
-
 function PrintDoc({ cons, firmaData }) {
   if (!cons) return null;
   const ops = cons.activeOps || [];
@@ -2181,7 +2180,7 @@ function PrintDoc({ cons, firmaData }) {
                     style={{
                       width: "100%",
                       borderCollapse: "collapse",
-                      fontSize: "7pt",
+                      fontSize: "9pt",
                     }}
                   >
                     <thead>
@@ -2221,9 +2220,9 @@ function PrintDoc({ cons, firmaData }) {
                         >
                           <td
                             style={{
-                              padding: "2.5pt 3pt",
+                              padding: "3pt 4pt",
                               color: "#999",
-                              fontSize: "6.5pt",
+                              fontSize: "9pt",
                               borderBottom: ".5pt solid #ebebeb",
                               textAlign: "center",
                             }}
@@ -2242,7 +2241,7 @@ function PrintDoc({ cons, firmaData }) {
                           </td>
                           <td
                             style={{
-                              padding: "2.5pt 3pt",
+                              padding: "3pt 4pt",
                               fontWeight: 500,
                               borderBottom: ".5pt solid #ebebeb",
                             }}
@@ -2251,7 +2250,7 @@ function PrintDoc({ cons, firmaData }) {
                           </td>
                           <td
                             style={{
-                              padding: "2.5pt 3pt",
+                              padding: "3pt 4pt",
                               textAlign: "center",
                               fontWeight: 700,
                               color: op.color,
@@ -2262,10 +2261,10 @@ function PrintDoc({ cons, firmaData }) {
                           </td>
                           <td
                             style={{
-                              padding: "2.5pt 3pt",
+                              padding: "3.5pt 4pt",
                               textAlign: "right",
                               fontWeight: 700,
-                              fontSize: "8.5pt",
+                              fontSize: "9.5pt",
                               borderBottom: ".5pt solid #ebebeb",
                             }}
                           >
@@ -2273,7 +2272,7 @@ function PrintDoc({ cons, firmaData }) {
                           </td>
                           <td
                             style={{
-                              padding: "2.5pt 3pt",
+                              padding: "3pt 4pt",
                               textAlign: "center",
                               color: "#888",
                               fontSize: "6.5pt",
@@ -3482,7 +3481,6 @@ function ModArmado({ toast, operarios, cons, setCons }) {
     }
   }
 
-  // ── Print screen ───────────────────────────────────────────
   if (screen === "print") {
     const c = cons.find((x) => x.id === currentId);
     return (
@@ -3494,7 +3492,15 @@ function ModArmado({ toast, operarios, cons, setCons }) {
           flexDirection: "column",
         }}
       >
+        <style>{`
+          @media print {
+            .no-print { display: none !important; }
+            .op-bloque { page-break-before: always !important; break-before: page !important; }
+            .op-bloque-first { page-break-before: auto !important; break-before: auto !important; }
+          }
+        `}</style>
         <div
+          className="no-print"
           style={{
             background: C.surf,
             padding: "10px 18px",
@@ -3722,8 +3728,10 @@ function ModArmado({ toast, operarios, cons, setCons }) {
                   ...card({
                     padding: "11px 12px",
                     cursor: "pointer",
-                    borderColor: fOps.includes(op.id) ? C.green : C.bord,
-                    background: fOps.includes(op.id)
+                    borderColor: fOps.some((x) => String(x) === String(op.id))
+                      ? C.green
+                      : C.bord,
+                    background: fOps.some((x) => String(x) === String(op.id))
                       ? "rgba(6,214,160,.06)"
                       : C.surf2,
                   }),
@@ -3734,8 +3742,8 @@ function ModArmado({ toast, operarios, cons, setCons }) {
                 }}
                 onClick={() =>
                   sfo((s) =>
-                    s.includes(op.id)
-                      ? s.filter((x) => x !== op.id)
+                    s.some((x) => String(x) === String(op.id))
+                      ? s.filter((x) => String(x) !== String(op.id))
                       : [...s, op.id]
                   )
                 }
@@ -3765,7 +3773,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
                     {op.codigo}
                   </div>
                 </div>
-                {fOps.includes(op.id) && (
+                {fOps.map(String).includes(String(op.id)) && (
                   <span
                     style={{
                       position: "absolute",
