@@ -265,23 +265,24 @@ const BS = {
   gap: "14px",
   overflowY: "auto",
 };
-
-// ─── PARSER XLS REAL ─────────────────────────────────────────
-// Soporta DOS formatos de XLS de la distribuidora:
-//
-// FORMATO A (Tanda 3/4): fila 0 empieza con "Ros-ArC"
-//   col[3]=número consolidado, col[6]=fecha DD/MM/YYYY
-//
-// FORMATO B (Tanda 2): fila 0 empieza con "Ubicacion"
-//   col[3]=fecha DD/MM/YYYY, sin número → usuario lo ingresa manual
-//
-// Productos en ambos: col[0]=pasillo, [1]=codigo, [2]=desc,
-//   [3]=qty_orig(ignorar D), [4]=unit_orig(ignorar E),
-//   [5]=bu_count, [6]="BU", [7]=final_qty, [8]=final_unit
 function parseXLS(text) {
-  const lines = text
-    .split("\n")
-    .map((l) => l.split(",").map((c) => c.replace(/^"|"$/g, "").trim()));
+  const lines = text.split("\n").map((l) => {
+    const cols = [];
+    let cur = "",
+      inQ = false;
+    for (let i = 0; i < l.length; i++) {
+      if (l[i] === '"') {
+        inQ = !inQ;
+      } else if (l[i] === "," && !inQ) {
+        cols.push(cur.trim());
+        cur = "";
+      } else {
+        cur += l[i];
+      }
+    }
+    cols.push(cur.trim());
+    return cols;
+  });
   let numero = "",
     fecha = "";
   const sections = [];
@@ -292,7 +293,6 @@ function parseXLS(text) {
     if (!row || !row[0]) continue;
     const first = row[0];
 
-    // ── FILA 0: detectar formato y extraer número/fecha ──────
     if (i === 0) {
       if (
         first === "Ros-ArC" ||
@@ -300,7 +300,6 @@ function parseXLS(text) {
         first === "T4" ||
         first === "T3"
       ) {
-        // FORMATO A: número en col[3], fecha en col[6] DD/MM/YYYY
         numero = row[3] || "";
         const fd = row[6] || "";
         if (fd && fd.includes("/")) {
@@ -308,8 +307,7 @@ function parseXLS(text) {
           fecha = `${p[2]}-${p[1].padStart(2, "0")}-${p[0].padStart(2, "0")}`;
         } else fecha = fd;
       } else if (first === "Ubicacion" || first === "Ubicación") {
-        // FORMATO B: fecha en col[3] DD/MM/YYYY, sin número
-        numero = ""; // usuario lo ingresa manualmente
+        numero = "";
         const fd = row[3] || "";
         if (fd && fd.includes("/")) {
           const p = fd.split("/");
@@ -319,10 +317,8 @@ function parseXLS(text) {
       continue;
     }
 
-    // Saltear filas de encabezado secundario
     if (first === "Grupo Segmento Evento:") continue;
 
-    // ── SECCIÓN / DIVISIÓN ───────────────────────────────────
     const sinCol1 = !row[1] || row[1] === "";
     const isDiv =
       first.startsWith("DIV") ||
@@ -338,23 +334,43 @@ function parseXLS(text) {
       continue;
     }
 
-    // ── TOTALES (ignorar) ────────────────────────────────────
     if (row[2] && row[2].includes("Total en BU")) {
       if (current) current.total_bu = row[4] || "0";
       continue;
     }
     if (row[2] && row[2].includes("Total en ")) continue;
 
-    // ── PRODUCTO: col[1] es código numérico ──────────────────
-    if (current && row[1] && /^\d+$/.test(row[1]) && row[2]) {
+    const codigoLimpio = row[1]
+      ? row[1].replace(/\.0+$/, "").replace(/"/g, "").trim()
+      : "";
+    console.log(
+      `fila ${i}: pasillo=${JSON.stringify(
+        row[0]
+      )} cod=${codigoLimpio} esDigito=${/^\d+$/.test(
+        codigoLimpio
+      )} current=${!!current} desc=${row[2]?.slice(0, 20)}`
+    );
+    if (current && codigoLimpio && /^\d+$/.test(codigoLimpio) && row[2]) {
+      const unitFinal = row[8] || row[4] || "UN";
+      const esBU = unitFinal === "BU";
+      const buQty = parseFloat(row[5] || "0") || 0;
+      const finalQty = parseFloat(row[7] || "0") || 0;
+      const dQty = parseFloat(row[3] || "0") || 0;
       current.products.push({
-        id: `${(row[0] || "x").replace(/[^a-z0-9]/gi, "")}-${row[1]}-${i}`,
+        id: `${(row[0] || "x").replace(
+          /[^a-z0-9]/gi,
+          ""
+        )}-${codigoLimpio}-${i}`,
         pasillo: row[0] || "",
-        codigo: row[1],
+        codigo: codigoLimpio,
         descripcion: row[2],
-        bu: row[5] || "0",
-        qty: row[7] || row[3] || "0",
-        unit: row[8] || row[4] || "UN",
+        bu: esBU ? "0" : buQty > 0 ? String(buQty) : "0",
+        qty: esBU
+          ? String(buQty)
+          : finalQty > 0
+          ? String(finalQty)
+          : String(dQty),
+        unit: esBU ? "BU" : row[4] || "UN",
       });
     }
   }
@@ -363,7 +379,6 @@ function parseXLS(text) {
   const result = sections.filter((s) => s.products.length > 0);
   return { sections: result, numero, fecha };
 }
-
 // ─── DATOS DEL XLS REAL (Tanda 4 — 82569) ───────────────────
 // Embebidos directamente del archivo subido. Sin columnas D y E.
 const XLS_DEFAULT = {
@@ -3301,6 +3316,18 @@ function ModArmado({ toast, operarios, cons, setCons }) {
           sheet["D1"]?.v
         );
         const csv = XLSX.utils.sheet_to_csv(sheet);
+        // LOG TEMPORAL - borrar después
+        const csvLines = csv.split("\n");
+        const menthoLines = csvLines.filter(
+          (l) => l.includes("MENTHO") || l.includes("10130")
+        );
+        console.log("CSV MENTHO:", menthoLines);
+        const sinPasillo = csvLines.filter((l, i) => {
+          if (i < 5) return false;
+          const cols = l.split(",");
+          return cols[0] === "" && cols[1] && /^\d/.test(cols[1]);
+        });
+        console.log("SIN PASILLO primeros 3:", sinPasillo.slice(0, 3));
         let prefijo = "",
           numero = "";
         try {
@@ -4775,6 +4802,8 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
                           whiteSpace: "nowrap",
                           textDecoration: isOk ? "line-through" : "none",
                           color: isOk ? C.muted : C.text,
+                          whiteSpace: "normal",
+                          lineHeight: 1.3,
                         }}
                       >
                         {line.descripcion}
@@ -4815,14 +4844,14 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
                           style={btn({
                             background: C.red,
                             color: "#fff",
-                            fontSize: "14px",
+                            fontSize: "12px",
                             fontWeight: 700,
-                            padding: "10px 16px",
+                            padding: "10px 8px",
                             borderRadius: "10px",
                           })}
                           onClick={() => sEl(line.id)}
                         >
-                          ✗ Error
+                          ✗
                         </button>
                       </div>
                     )}
