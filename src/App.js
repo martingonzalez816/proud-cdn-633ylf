@@ -2205,8 +2205,7 @@ function PrintDoc({ cons, firmaData }) {
                           "CÓDIGO",
                           "DESCRIPCIÓN",
                           "BU",
-                          "FINAL",
-                          "UN",
+                          "CANTIDAD",
                           "✓",
                         ].map((h) => (
                           <th
@@ -2267,7 +2266,7 @@ function PrintDoc({ cons, firmaData }) {
                             style={{
                               padding: "3pt 4pt",
                               textAlign: "center",
-                              fontWeight: 700,
+                              fontWeight: 1100,
                               color: op.color,
                               borderBottom: ".5pt solid #ebebeb",
                             }}
@@ -2276,10 +2275,10 @@ function PrintDoc({ cons, firmaData }) {
                           </td>
                           <td
                             style={{
-                              padding: "3.5pt 4pt",
+                              padding: "3pt 4pt",
                               textAlign: "right",
-                              fontWeight: 700,
-                              fontSize: "9.5pt",
+                              fontWeight: 900,
+                              fontSize: "13pt",
                               borderBottom: ".5pt solid #ebebeb",
                             }}
                           >
@@ -2293,9 +2292,7 @@ function PrintDoc({ cons, firmaData }) {
                               fontSize: "6.5pt",
                               borderBottom: ".5pt solid #ebebeb",
                             }}
-                          >
-                            {p.unit}
-                          </td>
+                          ></td>
                           <td
                             style={{
                               padding: "2.5pt 3pt",
@@ -2765,49 +2762,132 @@ function ModOperarios({ operarios, setOperarios, toast }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════
-// MÓDULO RECEPCIÓN
-// ═══════════════════════════════════════════════════════════════
-function ModRecepcion({ toast, operarios }) {
-  const [prods, setProds] = useDB("rosarc_venc", []);
-  const [form, sf] = useState({
-    nombre: "",
-    codigo: "",
-    cat: "Galletitas",
-    fecha: "",
-    cantidad: 1,
-    operario: "",
-  });
-  const [filter, sfil] = useState("todos");
-  const [search, ss] = useState("");
-  const [loading, sl] = useState(false);
-  const [preview, sp] = useState(null);
-  const [showF, ssf] = useState(false);
-  const cats = [
-    "Galletitas",
-    "Caramelos",
-    "Snacks",
-    "Chocolates",
-    "Bebidas",
-    "Lácteos",
-    "Otro",
-  ];
+// ─── PARSER CSV RECEPCIÓN ─────────────────────────────────────
+function parseDespachoCSV(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.split(",").map((c) => c.trim()));
 
-  async function handleImg(e) {
-    const f = e.target.files[0];
-    if (!f) return;
+  const info = {
+    nroCarga: "",
+    fecha: "",
+    chofer: "",
+    pallets: "",
+    empresa: "ARCOR",
+  };
+  const productos = [];
+  let empresaActual = "";
+  let facturaActual = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const row = lines[i];
+    if (!row || !row[0]) continue;
+
+    // Header info
+    if (row[0].includes("Nro. de Carga:")) {
+      info.nroCarga = row[1] || "";
+      const fechaRaw = row[4] || "";
+      if (fechaRaw.includes("/")) {
+        const p = fechaRaw.split("/");
+        info.fecha = `20${p[2]}-${p[1].padStart(2, "0")}-${p[0].padStart(
+          2,
+          "0"
+        )}`;
+      }
+    }
+    if (row[0].includes("Chofer:")) info.chofer = row[1] || "";
+    if (row[0].includes("Cantidad de Pallets:")) info.pallets = row[1] || "";
+    if (row[0] === "Empresa") empresaActual = row[1] || "";
+    if (row[0].includes("Nro. de Factura")) facturaActual = row[1] || "";
+
+    // Productos: EAN en col0 (numérico largo) o col0 vacío con col1 numérico
+    const ean = row[0];
+    const codigo = row[1];
+    const desc = row[2];
+    const unidad = row[3];
+    const cant = row[4];
+
+    const tieneProducto =
+      desc &&
+      cant &&
+      /^\d+$/.test(cant) &&
+      (/^\d{8,}$/.test(ean) || (ean === "" && /^\d+$/.test(codigo)));
+
+    if (
+      tieneProducto &&
+      desc !== "Total de bultos para esta empresa" &&
+      desc !== "Total General"
+    ) {
+      productos.push({
+        id: `${codigo}-${i}`,
+        ean: ean || "",
+        codigo: codigo || "",
+        descripcion: desc || "",
+        unidad: unidad || "BULTOS",
+        cantEsperada: parseInt(cant) || 0,
+        cantReal: null, // null = no verificado
+        empresa: empresaActual,
+        factura: facturaActual,
+        estado: "pendiente", // pendiente | ok | diferencia
+        fotoVerificada: false,
+        vencimiento: "",
+      });
+    }
+  }
+
+  return { info, productos };
+}
+function ModRecepcion({ toast, operarios }) {
+  const [tab, setTab] = useState("carga"); // carga | control | resumen
+  const [despacho, setDespacho] = useDB("rosarc_recepcion_v2", null);
+  const [operario, setOperario] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [camIdx, setCamIdx] = useState(null); // índice producto que se está fotografiando
+  const [editIdx, setEditIdx] = useState(null); // índice producto editando cantidad
+
+  function handleCSV(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = ev.target.result;
+        const { info, productos } = parseDespachoCSV(text);
+        if (productos.length === 0) {
+          toast("⚠️ No se encontraron productos en el CSV", "error");
+          return;
+        }
+        setDespacho({
+          info,
+          productos,
+          operario,
+          cargadoEn: new Date().toISOString(),
+        });
+        setTab("control");
+        toast(
+          `✅ ${productos.length} productos cargados · Carga ${info.nroCarga}`
+        );
+      } catch (err) {
+        toast("❌ Error al leer el CSV", "error");
+      }
+    };
+    reader.readAsText(file, "latin1");
+  }
+
+  async function verificarFoto(e, idx) {
+    const file = e.target.files[0];
+    if (!file || !despacho) return;
+    setLoading(true);
+    setCamIdx(idx);
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      sp(ev.target.result);
-      sl(true);
-      ssf(true);
       try {
         const res = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "claude-sonnet-4-20250514",
-            max_tokens: 400,
+            max_tokens: 500,
             messages: [
               {
                 role: "user",
@@ -2816,13 +2896,14 @@ function ModRecepcion({ toast, operarios }) {
                     type: "image",
                     source: {
                       type: "base64",
-                      media_type: f.type || "image/jpeg",
+                      media_type: file.type || "image/jpeg",
                       data: ev.target.result.split(",")[1],
                     },
                   },
                   {
                     type: "text",
-                    text: 'Analizá esta caja. SOLO JSON sin markdown:\n{"nombre":"","codigo":"","categoria":"Galletitas|Caramelos|Snacks|Chocolates|Bebidas|Lácteos|Otro","fecha_vencimiento":"YYYY-MM-DD"}',
+                    text: `Analizá esta imagen de un producto alimenticio. Extraé SOLO en JSON sin markdown:
+{"codigo":"código interno del producto (numérico)","ean":"código de barras EAN (13 dígitos si visible)","descripcion":"nombre del producto","vencimiento":"fecha de vencimiento en formato YYYY-MM-DD o vacío si no se ve"}`,
                   },
                 ],
               },
@@ -2830,435 +2911,585 @@ function ModRecepcion({ toast, operarios }) {
           }),
         });
         const d = await res.json();
-        const p = JSON.parse(
-          d.content
-            .map((i) => i.text || "")
-            .join("")
-            .replace(/```json|```/g, "")
-            .trim()
-        );
-        sf((x) => ({
-          ...x,
-          nombre: p.nombre || "",
-          codigo: p.codigo || "",
-          cat: p.categoria || "Otro",
-          fecha: p.fecha_vencimiento || "",
-        }));
-        toast("✅ IA extrajo los datos");
-      } catch {
-        toast("⚠️ Completá manualmente", "error");
+        const txt = d.content
+          .map((x) => x.text || "")
+          .join("")
+          .replace(/```json|```/g, "")
+          .trim();
+        const parsed = JSON.parse(txt);
+
+        // Buscar match en productos
+        const prods = [...despacho.productos];
+        const prod = prods[idx];
+
+        const matchCodigo =
+          parsed.codigo &&
+          prod.codigo &&
+          prod.codigo.replace(/^0+/, "") === parsed.codigo.replace(/^0+/, "");
+        const matchEAN = parsed.ean && prod.ean && prod.ean === parsed.ean;
+
+        if (matchCodigo || matchEAN) {
+          prods[idx] = {
+            ...prod,
+            fotoVerificada: true,
+            vencimiento: parsed.vencimiento || prod.vencimiento,
+            codigoIA: parsed.codigo,
+            eanIA: parsed.ean,
+          };
+          toast(`✅ Producto verificado: ${prod.descripcion}`);
+        } else {
+          toast(
+            `⚠️ Código no coincide. CSV: ${prod.codigo} · IA detectó: ${
+              parsed.codigo || "—"
+            }`,
+            "error"
+          );
+          prods[idx] = {
+            ...prod,
+            fotoVerificada: false,
+            errorFoto: `IA detectó: ${
+              parsed.codigo || parsed.ean || "desconocido"
+            }`,
+          };
+        }
+
+        setDespacho({ ...despacho, productos: prods });
+      } catch (err) {
+        toast("⚠️ No se pudo leer la imagen, ingresá manualmente", "error");
       } finally {
-        sl(false);
+        setLoading(false);
+        setCamIdx(null);
       }
     };
-    reader.readAsDataURL(f);
+    reader.readAsDataURL(file);
   }
 
-  function add() {
-    if (!form.nombre || !form.fecha) {
-      toast("⚠️ Nombre y fecha requeridos", "error");
-      return;
+  function setCantidad(idx, valor) {
+    if (!despacho) return;
+    const prods = [...despacho.productos];
+    const prod = prods[idx];
+    const cantReal = parseInt(valor) || 0;
+    let estado = "pendiente";
+    if (prod.fotoVerificada || cantReal > 0) {
+      estado = cantReal === prod.cantEsperada ? "ok" : "diferencia";
     }
-    setProds((ps) => [
-      ...ps,
-      { id: Date.now(), ...form, fechaRegistro: todayStr() },
-    ]);
-    sf({
-      nombre: "",
-      codigo: "",
-      cat: "Galletitas",
-      fecha: "",
-      cantidad: 1,
-      operario: form.operario,
-    });
-    sp(null);
-    ssf(false);
-    toast(`📦 "${form.nombre}" registrado`);
+    prods[idx] = { ...prod, cantReal, estado };
+    setDespacho({ ...despacho, productos: prods });
   }
 
-  const counts = { [C.red]: 0, [C.orange]: 0, [C.yellow]: 0, [C.green]: 0 };
-  prods.forEach((p) => counts[vencSt(p.fecha).c]++);
-  const filtered = prods
-    .filter(
-      (p) =>
-        (filter === "todos" || vencSt(p.fecha).c === filter) &&
-        (!search ||
-          p.nombre.toLowerCase().includes(search.toLowerCase()) ||
-          p.codigo.includes(search))
-    )
-    .sort((a, b) => {
-      const o = { [C.red]: 0, [C.orange]: 1, [C.yellow]: 2, [C.green]: 3 };
-      return (o[vencSt(a.fecha).c] || 0) - (o[vencSt(b.fecha).c] || 0);
+  function enviarAlSheet() {
+    if (!despacho) return;
+    api.post("recepcion_despacho", {
+      info: despacho.info,
+      operario,
+      productos: despacho.productos,
+      timestamp: new Date().toISOString(),
     });
+    toast("✅ Recepción enviada al Sheet");
+  }
 
-  return (
-    <div style={BS}>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4,1fr)",
-          gap: "8px",
-        }}
-      >
-        {[
-          [C.red, "Vencidos"],
-          [C.orange, "Críticos"],
-          [C.yellow, "Alerta"],
-          [C.green, "OK"],
-        ].map(([c, l]) => (
-          <div
-            key={l}
-            style={card({
-              padding: "12px",
-              textAlign: "center",
-              cursor: "pointer",
-              borderColor: filter === c ? c : C.bord,
-            })}
-            onClick={() => sfil(filter === c ? "todos" : c)}
-          >
-            <div style={{ fontSize: "26px", fontWeight: 900, color: c }}>
-              {counts[c]}
-            </div>
-            <div
-              style={{
-                fontSize: "9px",
-                color: C.muted,
-                letterSpacing: "1px",
-                textTransform: "uppercase",
-              }}
+  // ── TAB CARGA ─────────────────────────────────────────────
+  if (tab === "carga")
+    return (
+      <div style={BS}>
+        <div style={card()}>
+          <div style={secTit}>📦 RECEPCIÓN DE MERCADERÍA</div>
+
+          <div style={{ marginBottom: "12px" }}>
+            <label style={lbl}>Operario que recepciona</label>
+            <select
+              style={inp}
+              value={operario}
+              onChange={(e) => setOperario(e.target.value)}
             >
-              {l}
-            </div>
+              <option value="">— Seleccionar —</option>
+              {operarios.map((op) => (
+                <option key={op.id} value={op.nombre}>
+                  {op.nombre}
+                </option>
+              ))}
+            </select>
           </div>
-        ))}
-      </div>
-      <div style={card()}>
-        <div style={secTit}>📦 REGISTRAR MERCADERÍA</div>
-        <p
-          style={{
-            fontSize: "11px",
-            color: C.muted,
-            marginBottom: "12px",
-            lineHeight: 1.5,
-            background: C.surf2,
-            padding: "8px 10px",
-            borderRadius: "6px",
-            borderLeft: `3px solid ${C.blue}`,
-          }}
-        >
-          📱 La cámara funciona cuando la app está publicada en Netlify.
-          <br />
-          En este preview usá el botón Manual.
-        </p>
-        <div
-          style={{
-            display: "flex",
-            gap: "8px",
-            flexWrap: "wrap",
-            marginBottom: "12px",
-          }}
-        >
+
           <label
             style={{
               ...btn({
                 background: `linear-gradient(135deg,${C.accent},#5b21b6)`,
                 color: "#fff",
+                width: "100%",
+                fontSize: "14px",
+                padding: "14px",
               }),
               cursor: "pointer",
             }}
           >
-            📷 Cámara
+            📂 Cargar CSV de Despacho
             <input
               type="file"
-              accept="image/*"
-              capture="environment"
+              accept=".csv,.txt"
               style={{ display: "none" }}
-              onChange={handleImg}
+              onChange={handleCSV}
             />
           </label>
-          <label
+
+          <p
             style={{
-              ...btn({
-                background: "linear-gradient(135deg,#0e7490,#0369a1)",
-                color: "#fff",
-              }),
-              cursor: "pointer",
-            }}
-          >
-            🖼 Galería
-            <input
-              type="file"
-              accept="image/*"
-              style={{ display: "none" }}
-              onChange={handleImg}
-            />
-          </label>
-          <button
-            style={btn({
-              background: C.surf2,
+              fontSize: "11px",
               color: C.muted,
-              border: `1px solid ${C.bord}`,
-            })}
-            onClick={() => ssf((s) => !s)}
+              marginTop: "10px",
+              lineHeight: 1.5,
+            }}
           >
-            ✏️ Manual
-          </button>
+            Cargá el archivo CSV que llega con cada despacho de Arcor. El
+            sistema va a extraer todos los productos automáticamente.
+          </p>
         </div>
-        {preview && (
-          <img
-            src={preview}
-            alt=""
-            style={{
-              width: "100%",
-              maxHeight: "140px",
-              objectFit: "cover",
-              borderRadius: "8px",
-              marginBottom: "10px",
-            }}
-          />
-        )}
-        {loading && (
-          <div
-            style={{
-              height: "3px",
-              background: `linear-gradient(90deg,${C.blue},${C.accent},${C.blue})`,
-              backgroundSize: "200%",
-              borderRadius: "2px",
-              marginBottom: "10px",
-              animation: "shimmer 1.2s infinite",
-            }}
-          />
-        )}
-        {showF && !loading && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "9px" }}>
-            <div>
-              <label style={lbl}>Nombre del producto</label>
-              <input
-                style={inp}
-                value={form.nombre}
-                onChange={(e) => sf((f) => ({ ...f, nombre: e.target.value }))}
-                placeholder="Serranas Sandwich"
-              />
+
+        {despacho && (
+          <div style={card({ borderColor: C.green })}>
+            <div style={secTit}>📋 ÚLTIMO DESPACHO CARGADO</div>
+            <div style={{ fontSize: "13px", marginBottom: "8px" }}>
+              <strong>Nro. Carga:</strong> {despacho.info.nroCarga} ·{" "}
+              <strong>Fecha:</strong> {despacho.info.fecha}
             </div>
             <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "8px",
-              }}
+              style={{ fontSize: "12px", color: C.muted, marginBottom: "12px" }}
             >
-              <div>
-                <label style={lbl}>Código</label>
-                <input
-                  style={inp}
-                  value={form.codigo}
-                  onChange={(e) =>
-                    sf((f) => ({ ...f, codigo: e.target.value }))
-                  }
-                  placeholder="07049"
-                />
-              </div>
-              <div>
-                <label style={lbl}>Categoría</label>
-                <select
-                  style={inp}
-                  value={form.cat}
-                  onChange={(e) => sf((f) => ({ ...f, cat: e.target.value }))}
-                >
-                  {cats.map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "8px",
-              }}
-            >
-              <div>
-                <label style={lbl}>Fecha Vencimiento</label>
-                <input
-                  type="date"
-                  style={inp}
-                  value={form.fecha}
-                  onChange={(e) => sf((f) => ({ ...f, fecha: e.target.value }))}
-                />
-              </div>
-              <div>
-                <label style={lbl}>Cantidad recibida</label>
-                <input
-                  type="number"
-                  style={inp}
-                  value={form.cantidad}
-                  min="1"
-                  onChange={(e) =>
-                    sf((f) => ({
-                      ...f,
-                      cantidad: parseInt(e.target.value) || 1,
-                    }))
-                  }
-                />
-              </div>
-            </div>
-            {/* Operario que recepciona */}
-            <div>
-              <label style={lbl}>Operario que recepciona</label>
-              <select
-                style={inp}
-                value={form.operario}
-                onChange={(e) =>
-                  sf((f) => ({ ...f, operario: e.target.value }))
-                }
-              >
-                <option value="">— Seleccionar —</option>
-                {operarios.map((op) => (
-                  <option key={op.id} value={op.nombre}>
-                    {op.nombre}
-                  </option>
-                ))}
-              </select>
+              Chofer: {despacho.info.chofer} · Pallets: {despacho.info.pallets}
             </div>
             <button
               style={btn({
-                background: `linear-gradient(135deg,${C.green},#059669)`,
+                background: C.green,
                 color: "#0a0c10",
                 fontWeight: 700,
                 width: "100%",
               })}
-              onClick={add}
+              onClick={() => setTab("control")}
             >
-              ✓ Agregar al inventario
+              → Continuar control
             </button>
           </div>
         )}
       </div>
-      <div
-        style={{
-          display: "flex",
-          gap: "7px",
-          flexWrap: "wrap",
-          alignItems: "center",
-        }}
-      >
-        <button
-          style={btn({
-            background: filter === "todos" ? C.accent : "transparent",
-            color: filter === "todos" ? "#fff" : C.muted,
-            border: `1px solid ${filter === "todos" ? C.accent : C.bord}`,
-            fontSize: "12px",
-            padding: "6px 12px",
-          })}
-          onClick={() => sfil("todos")}
-        >
-          Todos {prods.length}
-        </button>
-        {[
-          [C.red, "Vencidos"],
-          [C.orange, "Críticos"],
-          [C.yellow, "Alerta"],
-          [C.green, "OK"],
-        ].map(([c, l]) => (
-          <button
-            key={l}
-            style={btn({
-              background: filter === c ? `${c}18` : "transparent",
-              color: filter === c ? c : C.muted,
-              border: `1px solid ${filter === c ? c : C.bord}`,
-              fontSize: "12px",
-              padding: "6px 12px",
-            })}
-            onClick={() => sfil(filter === c ? "todos" : c)}
+    );
+
+  // ── TAB CONTROL ───────────────────────────────────────────
+  if (tab === "control" && despacho) {
+    const total = despacho.productos.length;
+    const ok = despacho.productos.filter((p) => p.estado === "ok").length;
+    const diff = despacho.productos.filter(
+      (p) => p.estado === "diferencia"
+    ).length;
+    const pend = despacho.productos.filter(
+      (p) => p.estado === "pendiente"
+    ).length;
+    const pct = total > 0 ? Math.round(((ok + diff) / total) * 100) : 0;
+
+    // Agrupar por empresa
+    const empresas = [...new Set(despacho.productos.map((p) => p.empresa))];
+
+    return (
+      <div style={BS}>
+        {loading && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,.7)",
+              zIndex: 2000,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexDirection: "column",
+              gap: "12px",
+            }}
           >
-            {l} {counts[c]}
-          </button>
-        ))}
-        <input
-          style={{
-            ...inp,
-            width: "150px",
-            marginLeft: "auto",
-            padding: "6px 10px",
-            fontSize: "12px",
-          }}
-          placeholder="🔍 Buscar..."
-          value={search}
-          onChange={(e) => ss(e.target.value)}
-        />
-      </div>
-      <div style={card({ padding: 0, overflow: "hidden" })}>
-        {filtered.length === 0 ? (
-          <div style={{ padding: "32px", textAlign: "center", color: C.muted }}>
-            Sin productos
+            <div
+              style={{
+                width: "48px",
+                height: "48px",
+                border: `4px solid ${C.accent}`,
+                borderTopColor: "transparent",
+                borderRadius: "50%",
+                animation: "spin 1s linear infinite",
+              }}
+            />
+            <div style={{ color: "#fff", fontSize: "14px" }}>
+              Analizando imagen con IA...
+            </div>
           </div>
-        ) : (
-          filtered.map((p, i) => {
-            const st = vencSt(p.fecha);
-            const fd = new Date(p.fecha + "T00:00:00").toLocaleDateString(
-              "es-AR",
-              { day: "2-digit", month: "2-digit", year: "numeric" }
-            );
-            return (
+        )}
+
+        {/* Header stats */}
+        <div style={card({ padding: "12px 14px" })}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              marginBottom: "8px",
+            }}
+          >
+            <span style={{ fontWeight: 700, fontSize: "15px" }}>
+              Carga #{despacho.info.nroCarga}
+            </span>
+            <span style={{ fontSize: "12px", color: C.muted }}>
+              {despacho.info.fecha}
+            </span>
+          </div>
+          <div
+            style={{
+              height: "6px",
+              background: C.bord,
+              borderRadius: "3px",
+              marginBottom: "8px",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                width: `${pct}%`,
+                background: `linear-gradient(90deg,${C.green},${C.blue})`,
+                borderRadius: "3px",
+                transition: "width .3s",
+              }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <span style={pill(C.muted)}>⏳ {pend} pendientes</span>
+            <span style={pill(C.green)}>✓ {ok} OK</span>
+            {diff > 0 && (
+              <span style={pill(C.orange)}>⚠ {diff} diferencias</span>
+            )}
+          </div>
+        </div>
+
+        {/* Productos por empresa */}
+        {empresas.map((empresa) => {
+          const prods = despacho.productos.filter((p) => p.empresa === empresa);
+          return (
+            <div key={empresa} style={card()}>
+              <div style={{ ...secTit, color: C.gold }}>
+                {empresa} — {prods.length} productos
+              </div>
+              {prods.map((prod, localIdx) => {
+                const idx = despacho.productos.indexOf(prod);
+                const esOk = prod.estado === "ok";
+                const esDiff = prod.estado === "diferencia";
+                const esPend = prod.estado === "pendiente";
+
+                const cardColor = esOk ? C.green : esDiff ? C.orange : C.bord;
+                const bgColor = esOk
+                  ? "rgba(6,214,160,.06)"
+                  : esDiff
+                  ? "rgba(255,140,66,.06)"
+                  : C.surf2;
+
+                return (
+                  <div
+                    key={prod.id}
+                    style={{
+                      background: bgColor,
+                      border: `1px solid ${cardColor}`,
+                      borderRadius: "10px",
+                      padding: "12px",
+                      marginBottom: "8px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        marginBottom: "6px",
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div
+                          style={{
+                            fontSize: "13px",
+                            fontWeight: 600,
+                            lineHeight: 1.3,
+                          }}
+                        >
+                          {prod.descripcion}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: "10px",
+                            color: C.muted,
+                            marginTop: "2px",
+                          }}
+                        >
+                          Cód: {prod.codigo}{" "}
+                          {prod.ean ? `· EAN: ${prod.ean}` : ""}
+                        </div>
+                        {prod.vencimiento && (
+                          <div
+                            style={{
+                              fontSize: "10px",
+                              color: C.blue,
+                              marginTop: "2px",
+                            }}
+                          >
+                            📅 Vence: {prod.vencimiento}
+                          </div>
+                        )}
+                        {prod.errorFoto && (
+                          <div
+                            style={{
+                              fontSize: "10px",
+                              color: C.red,
+                              marginTop: "2px",
+                            }}
+                          >
+                            ⚠ {prod.errorFoto}
+                          </div>
+                        )}
+                      </div>
+                      <div
+                        style={{
+                          textAlign: "right",
+                          flexShrink: 0,
+                          marginLeft: "8px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: "20px",
+                            fontWeight: 900,
+                            color: C.blue,
+                          }}
+                        >
+                          {prod.cantEsperada}
+                        </div>
+                        <div style={{ fontSize: "9px", color: C.muted }}>
+                          {prod.unidad}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: "8px",
+                        alignItems: "center",
+                      }}
+                    >
+                      {/* Foto */}
+                      <label
+                        style={{
+                          ...btn({
+                            background: prod.fotoVerificada ? C.green : C.surf,
+                            color: prod.fotoVerificada ? "#0a0c10" : C.muted,
+                            border: `1px solid ${
+                              prod.fotoVerificada ? C.green : C.bord
+                            }`,
+                            fontSize: "12px",
+                            padding: "8px 10px",
+                            flexShrink: 0,
+                          }),
+                          cursor: "pointer",
+                        }}
+                      >
+                        {prod.fotoVerificada ? "✓ Foto" : "📷"}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          style={{ display: "none" }}
+                          onChange={(e) => verificarFoto(e, idx)}
+                        />
+                      </label>
+
+                      {/* Cantidad real */}
+                      <div style={{ flex: 1 }}>
+                        <input
+                          type="number"
+                          style={{
+                            ...inp,
+                            fontSize: "18px",
+                            fontWeight: 700,
+                            textAlign: "center",
+                            borderColor: esOk
+                              ? C.green
+                              : esDiff
+                              ? C.orange
+                              : C.bord,
+                            color: esOk ? C.green : esDiff ? C.orange : C.text,
+                          }}
+                          placeholder={`Esperado: ${prod.cantEsperada}`}
+                          value={prod.cantReal ?? ""}
+                          onChange={(e) => setCantidad(idx, e.target.value)}
+                        />
+                      </div>
+
+                      {/* Estado */}
+                      <div style={{ flexShrink: 0, fontSize: "24px" }}>
+                        {esOk && "✅"}
+                        {esDiff && "⚠️"}
+                        {esPend && <span style={{ color: C.muted }}>○</span>}
+                      </div>
+                    </div>
+
+                    {esDiff && prod.cantReal !== null && (
+                      <div
+                        style={{
+                          marginTop: "6px",
+                          padding: "4px 8px",
+                          background: "rgba(255,140,66,.15)",
+                          borderRadius: "6px",
+                          fontSize: "11px",
+                          color: C.orange,
+                          fontWeight: 600,
+                        }}
+                      >
+                        ⚠ Diferencia: esperado {prod.cantEsperada} · recibido{" "}
+                        {prod.cantReal}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+
+        {/* Botones finales */}
+        <div style={card()}>
+          <button
+            style={btn({
+              background: `linear-gradient(135deg,${C.green},#059669)`,
+              color: "#0a0c10",
+              fontWeight: 700,
+              width: "100%",
+              fontSize: "14px",
+              padding: "14px",
+              marginBottom: "8px",
+            })}
+            onClick={() => {
+              enviarAlSheet();
+              setTab("resumen");
+            }}
+          >
+            ✓ FINALIZAR Y ENVIAR AL SHEET
+          </button>
+          <button
+            style={btn({
+              background: "transparent",
+              color: C.muted,
+              border: `1px solid ${C.bord}`,
+              width: "100%",
+            })}
+            onClick={() => setTab("carga")}
+          >
+            ← Volver
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── TAB RESUMEN ───────────────────────────────────────────
+  if (tab === "resumen" && despacho) {
+    const ok = despacho.productos.filter((p) => p.estado === "ok");
+    const diff = despacho.productos.filter((p) => p.estado === "diferencia");
+    const pend = despacho.productos.filter((p) => p.estado === "pendiente");
+
+    return (
+      <div style={BS}>
+        <div
+          style={card({
+            borderColor: C.green,
+            textAlign: "center",
+            padding: "24px",
+          })}
+        >
+          <div style={{ fontSize: "48px", marginBottom: "8px" }}>✅</div>
+          <div style={{ fontSize: "18px", fontWeight: 900, color: C.green }}>
+            Recepción completada
+          </div>
+          <div style={{ fontSize: "12px", color: C.muted, marginTop: "4px" }}>
+            Carga #{despacho.info.nroCarga}
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr 1fr",
+            gap: "8px",
+          }}
+        >
+          {[
+            [ok.length, "✓ OK", C.green],
+            [diff.length, "⚠ Difer.", C.orange],
+            [pend.length, "Pend.", C.muted],
+          ].map(([v, l, c]) => (
+            <div key={l} style={card({ padding: "12px", textAlign: "center" })}>
+              <div style={{ fontSize: "24px", fontWeight: 900, color: c }}>
+                {v}
+              </div>
+              <div style={{ fontSize: "10px", color: C.muted }}>{l}</div>
+            </div>
+          ))}
+        </div>
+
+        {diff.length > 0 && (
+          <div style={card({ borderColor: C.orange })}>
+            <div style={secTit}>⚠️ DIFERENCIAS</div>
+            {diff.map((p) => (
               <div
                 key={p.id}
                 style={{
-                  padding: "12px 14px",
-                  borderBottom:
-                    i < filtered.length - 1 ? `1px solid ${C.bord}` : "none",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "10px",
-                  borderLeft: `3px solid ${st.c}`,
+                  padding: "8px 0",
+                  borderBottom: `1px solid ${C.bord}`,
+                  fontSize: "12px",
                 }}
               >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontWeight: 500,
-                      fontSize: "13px",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {p.nombre}
-                  </div>
-                  <div style={{ fontSize: "10px", color: C.muted }}>
-                    {p.codigo && `#${p.codigo} · `}
-                    {p.cat} · {p.cantidad}u
-                    {p.operario ? ` · ${p.operario}` : ""}
-                  </div>
+                <div style={{ fontWeight: 600 }}>{p.descripcion}</div>
+                <div style={{ color: C.orange }}>
+                  Esperado: {p.cantEsperada} · Recibido: {p.cantReal}
                 </div>
-                <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div
-                    style={{ fontSize: "12px", color: st.c, fontWeight: 700 }}
-                  >
-                    {fd}
-                  </div>
-                  <div style={{ fontSize: "10px", color: st.c }}>
-                    {st.d < 0 ? `hace ${Math.abs(st.d)}d` : `${st.d}d`}
-                  </div>
-                </div>
-                <span style={pill(st.c)}>{st.l}</span>
-                <button
-                  style={btn({
-                    background: "transparent",
-                    color: C.red,
-                    padding: "4px 6px",
-                    fontSize: "12px",
-                  })}
-                  onClick={() =>
-                    setProds((ps) => ps.filter((x) => x.id !== p.id))
-                  }
-                >
-                  ✕
-                </button>
               </div>
-            );
-          })
+            ))}
+          </div>
         )}
+
+        <button
+          style={btn({
+            background: C.accent,
+            color: "#fff",
+            fontWeight: 700,
+            width: "100%",
+            fontSize: "14px",
+            padding: "14px",
+          })}
+          onClick={() => {
+            setDespacho(null);
+            setTab("carga");
+          }}
+        >
+          + Nueva recepción
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={BS}>
+      <div style={{ textAlign: "center", color: C.muted, padding: "40px" }}>
+        Cargá un CSV de despacho para empezar.
+        <br />
+        <button
+          style={btn({
+            background: C.accent,
+            color: "#fff",
+            marginTop: "12px",
+          })}
+          onClick={() => setTab("carga")}
+        >
+          → Ir a carga
+        </button>
       </div>
     </div>
   );
@@ -4810,6 +5041,13 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
                       </div>
                       <div style={{ fontSize: "10px", color: C.muted }}>
                         {line.codigo} ·{" "}
+                        {line.bu && line.bu !== "0" && line.unit !== "BU" && (
+                          <strong
+                            style={{ color: C.orange, marginRight: "6px" }}
+                          >
+                            {line.bu} BU ·
+                          </strong>
+                        )}
                         <strong style={{ color: C.text }}>
                           {line.qty} {line.unit}
                         </strong>
