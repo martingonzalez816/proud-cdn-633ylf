@@ -2844,6 +2844,35 @@ function ModRecepcion({ toast, operarios }) {
   const [loading, setLoading] = useState(false);
   const [camIdx, setCamIdx] = useState(null); // índice producto que se está fotografiando
   const [editIdx, setEditIdx] = useState(null); // índice producto editando cantidad
+  // Polling cada 5 segundos — sincroniza con Sheet en todos los dispositivos
+  useEffect(() => {
+    function sincronizarRecepcion() {
+      fetch(`${APPS_SCRIPT_URL}?accion=leer_recepcion`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.status === "ok" && d.despacho) {
+            setDespacho((prev) => {
+              // Si el remoto es una carga más nueva, siempre tomar el remoto
+              const mismasCarga =
+                prev?.info?.nroCarga === d.despacho.info.nroCarga;
+              if (mismasCarga) {
+                // Misma carga: conservar local solo si tiene edits más recientes
+                const localTieneEdits = prev?.productos?.some(
+                  (p) => p.cantReal !== null
+                );
+                if (localTieneEdits) return prev;
+              }
+              // Carga diferente o sin datos locales: tomar el remoto
+              return d.despacho;
+            });
+          }
+        })
+        .catch(() => {});
+    }
+    sincronizarRecepcion();
+    const t = setInterval(sincronizarRecepcion, 5000);
+    return () => clearInterval(t);
+  }, []);
 
   function handleCSV(e) {
     const file = e.target.files[0];
@@ -2857,11 +2886,19 @@ function ModRecepcion({ toast, operarios }) {
           toast("⚠️ No se encontraron productos en el CSV", "error");
           return;
         }
-        setDespacho({
+        const nuevoDespacho = {
           info,
           productos,
           operario,
           cargadoEn: new Date().toISOString(),
+        };
+        setDespacho(nuevoDespacho);
+        // Guardar al Sheet inmediatamente al cargar el CSV
+        api.post("recepcion_despacho", {
+          info: nuevoDespacho.info,
+          operario: nuevoDespacho.operario,
+          productos: nuevoDespacho.productos,
+          timestamp: new Date().toISOString(),
         });
         setTab("control");
         toast(
@@ -2953,7 +2990,17 @@ function ModRecepcion({ toast, operarios }) {
           };
         }
 
-        setDespacho({ ...despacho, productos: prods });
+        const actualizado = { ...despacho, productos: prods };
+        setDespacho(actualizado);
+        clearTimeout(window._recepcionTimer);
+        window._recepcionTimer = setTimeout(() => {
+          api.post("recepcion_despacho", {
+            info: actualizado.info,
+            operario,
+            productos: actualizado.productos,
+            timestamp: new Date().toISOString(),
+          });
+        }, 1000);
       } catch (err) {
         toast("⚠️ No se pudo leer la imagen, ingresá manualmente", "error");
       } finally {
@@ -2970,11 +3017,22 @@ function ModRecepcion({ toast, operarios }) {
     const prod = prods[idx];
     const cantReal = parseInt(valor) || 0;
     let estado = "pendiente";
-    if (prod.fotoVerificada || cantReal > 0) {
+    if (cantReal > 0) {
       estado = cantReal === prod.cantEsperada ? "ok" : "diferencia";
     }
     prods[idx] = { ...prod, cantReal, estado };
-    setDespacho({ ...despacho, productos: prods });
+    const nuevo = { ...despacho, productos: prods };
+    setDespacho(nuevo);
+    // Auto-guardar al Sheet cada vez que se modifica una cantidad
+    clearTimeout(window._recepcionTimer);
+    window._recepcionTimer = setTimeout(() => {
+      api.post("recepcion_despacho", {
+        info: nuevo.info,
+        operario,
+        productos: nuevo.productos,
+        timestamp: new Date().toISOString(),
+      });
+    }, 2000); // espera 2 segundos después del último cambio
   }
 
   function enviarAlSheet() {
@@ -5292,14 +5350,14 @@ function ModMetricas({ toast, cons, prods }) {
               ),
             }))
           ),
-          recepciones: prods.map((p) => ({
-            nombre: p.nombre,
+          recepciones: (prods?.productos || []).map((p) => ({
+            nombre: p.descripcion || "",
             codigo: p.codigo || "",
-            cat: p.cat || "",
-            fecha: p.fecha,
-            cantidad: p.cantidad || 1,
-            fechaRegistro: p.fechaRegistro || today,
-            operario: p.operario || "",
+            cat: p.empresa || "",
+            fecha: p.vencimiento || "",
+            cantidad: p.cantEsperada || 0,
+            fechaRegistro: prods?.info?.fecha || todayStr(),
+            operario: prods?.operario || "",
           })),
         },
       };
@@ -5345,7 +5403,7 @@ function ModMetricas({ toast, cons, prods }) {
           [ritmo, "Piq./min", C.green],
           [totalOk, "✓ OK", C.green],
           [totalErr, "✗ Errores", C.red],
-          [prods.length, "Recepciones", C.accent],
+          [prods?.productos?.length || 0, "Recepciones", C.accent],
         ].map(([v, l, c]) => (
           <div
             key={l}
@@ -5500,7 +5558,7 @@ function ModMetricas({ toast, cons, prods }) {
             [`📋 ${cons.length} consolidados`, C.blue],
             [`⚠️ ${erroresAll.length} errores`, C.red],
             [`👷 ${opArr.length} operarios`, C.green],
-            [`📦 ${prods.length} recepciones`, C.accent],
+            [`📦 ${prods?.productos?.length || 0} recepciones`, C.accent],
           ].map(([l, c]) => (
             <div
               key={l}
@@ -5581,7 +5639,7 @@ export default function App() {
   const [tab, setTab] = useState("armado");
   const [toast, setT] = useState({ msg: "", type: "ok" });
   const [operariosRaw, setOperariosRaw] = useDB("rosarc_ops_v6", []);
-  const [prods] = useDB("rosarc_venc", []);
+  const [prods] = useDB("rosarc_recepcion_v2", null);
   const { cons, setCons, sincronizar, syncOk, lastSync } = useConsolidados();
 
   const setOperarios = useCallback(
@@ -5638,7 +5696,7 @@ export default function App() {
         flexDirection: "column",
       }}
     >
-      <style>{`@keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}} *{box-sizing:border-box;} @media print{.no-print{display:none!important}}`}</style>
+      <style>{`@keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}} *{box-sizing:border-box;} @media print{.no-print{display:none!important}}@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}`}</style>
       {toast.msg && (
         <div
           style={{
