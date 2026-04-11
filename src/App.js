@@ -149,20 +149,49 @@ function useConsolidados() {
       const merged = remoto.map((rc) => {
         const local = prev.find((lc) => String(lc.id) === String(rc.id));
         if (!local) return rc;
-        const localMarcadas = (local.lines || []).filter(
-          (l) => l.estado
-        ).length;
+        const localMarcadas = (local.lines || []).filter((l) => l.estado).length;
         const remotoMarcadas = (rc.lines || []).filter((l) => l.estado).length;
-        // Siempre conservar startTime del local porque el Sheet no lo guarda
         const localGana = localMarcadas >= remotoMarcadas;
+
+        // Decidir qué activeOps usar:
+        // El remoto tiene divisiones si algún op tiene divisiones.length > 0
+        // El local puede no tenerlas si fue sincronizado antes del fix del Sheet.
+        const remoteTieneDivisiones = (rc.activeOps || []).some(
+          (o) => (o.divisiones || []).length > 0
+        );
+        const localTieneDivisiones = (local.activeOps || []).some(
+          (o) => (o.divisiones || []).length > 0
+        );
+
+        // Merge de activeOps: conservar finished/endTime/startTime del local,
+        // pero tomar divisiones del remoto si el local no las tiene
+        const activeOpsMerged = (rc.activeOps || []).map((rop) => {
+          const lop = (local.activeOps || []).find(
+            (o) => String(o.id) === String(rop.id) || o.nombre === rop.nombre
+          );
+          if (!lop) return rop;
+          return {
+            ...rop,                          // base: remoto (tiene divisiones)
+            startTime: lop.startTime || rop.startTime,
+            endTime: lop.endTime || rop.endTime,
+            finished: lop.finished || rop.finished,
+            color: lop.color || rop.color,
+            // Divisiones: preferir local si las tiene, sino tomar remoto
+            divisiones: localTieneDivisiones
+              ? (lop.divisiones || [])
+              : (rop.divisiones || []),
+          };
+        });
+
         return {
           ...(localGana ? local : rc),
           startTime: local.startTime,
-          activeOps: local.activeOps,
+          activeOps: activeOpsMerged,        // ← merge inteligente
           finished: local.finished || rc.finished,
           lines: localGana ? local.lines : rc.lines,
         };
       });
+
       // Agregar consolidados locales que aún no están en remoto
       prev.forEach((lc) => {
         if (!merged.find((m) => String(m.id) === String(lc.id)))
@@ -350,12 +379,38 @@ function parseXLS(text) {
         codigoLimpio
       )} current=${!!current} desc=${row[2]?.slice(0, 20)}`
     );
+    // REEMPLAZAR este bloque en parseXLS (desde "if (current && codigoLimpio" hasta "});")
+
     if (current && codigoLimpio && /^\d+$/.test(codigoLimpio) && row[2]) {
-      const unitFinal = row[8] || row[4] || "UN";
-      const esBU = unitFinal === "BU";
-      const buQty = parseFloat(row[5] || "0") || 0;
-      const finalQty = parseFloat(row[7] || "0") || 0;
-      const dQty = parseFloat(row[3] || "0") || 0;
+      const buQty = parseFloat(row[5] || "0") || 0; // col F — cantidad BU
+      const venQty = parseFloat(row[7] || "0") || 0; // col H — cantidad venta (UN sueltas)
+      const venUnit = row[8] || row[4] || "UN"; // col I — unidad de venta
+
+      // Regla directa del XLS Arcor:
+      // col F = BU, col H = unidades sueltas adicionales
+      // Si BU=0 → solo col H en su unidad
+      // Si BU>0 y col H=0 → solo BU
+      // Si BU>0 y col H>0 → BU como principal, col H como bu (unidades sueltas)
+
+      let qty, unit, bu;
+
+      if (buQty > 0 && venQty > 0) {
+        // LATA MEMBRILLO: 1 BU · 2 UN — pickear 1 BU y 2 unidades sueltas
+        qty = String(buQty);
+        unit = "BU";
+        bu = String(venQty); // unidades sueltas adicionales
+      } else if (buQty > 0 && venQty === 0) {
+        // PURE DE TOMATE: 3 BU — pickear solo bultos
+        qty = String(buQty);
+        unit = "BU";
+        bu = "0";
+      } else {
+        // MERM FRUTOS ROJOS: 2 UN — pickear unidades, sin BU
+        qty = String(venQty);
+        unit = venUnit;
+        bu = "0";
+      }
+
       current.products.push({
         id: `${(row[0] || "x").replace(
           /[^a-z0-9]/gi,
@@ -364,15 +419,21 @@ function parseXLS(text) {
         pasillo: row[0] || "",
         codigo: codigoLimpio,
         descripcion: row[2],
-        bu: esBU ? "0" : buQty > 0 ? String(buQty) : "0",
-        qty: esBU
-          ? String(buQty)
-          : finalQty > 0
-          ? String(finalQty)
-          : String(dQty),
-        unit: esBU ? "BU" : row[4] || "UN",
+        bu,
+        qty,
+        unit,
       });
     }
+
+    // RESULTADO ESPERADO con tus datos reales:
+    // MERM. LC FRUTOS ROJOS  → bu=0,  qty=2,  unit=UN  → "—  2 UN"   ✅
+    // PURE DE TOMATE LC      → bu=0,  qty=3,  unit=BU  → "—  3 BU"   ✅
+    // TOMATE CUBETEADO       → bu=0,  qty=1,  unit=BU  → "—  1 BU"   ✅
+    // LATA 700g MEMBRILLO    → bu=2,  qty=1,  unit=BU  → "2  1 BU"   ✅
+    // LAT. RELL TARTA CHOCLO → bu=5,  qty=1,  unit=BU  → "5  1 BU"   ✅
+    // TOMATE PERITA LC       → bu=12, qty=8,  unit=BU  → "12 8 BU"   ✅
+    // LAT TOM/PURE SALSATIX  → bu=0,  qty=12, unit=UN  → "—  12 UN"  ✅
+    // ATUN ENS.ROJA          → bu=0,  qty=17, unit=UN  → "—  17 UN"  ✅
   }
   if (current) sections.push(current);
 
@@ -2271,7 +2332,7 @@ function PrintDoc({ cons, firmaData }) {
                               borderBottom: ".5pt solid #ebebeb",
                             }}
                           >
-                            {p.bu !== "0" ? p.bu : "—"}
+                            {p.unit === "BU" ? p.qty : (p.bu !== "0" ? p.bu : "—")}
                           </td>
                           <td
                             style={{
@@ -2282,7 +2343,7 @@ function PrintDoc({ cons, firmaData }) {
                               borderBottom: ".5pt solid #ebebeb",
                             }}
                           >
-                            {p.qty}
+                            {p.unit === "BU" ? (p.bu !== "0" ? p.bu : "0") : p.qty}
                           </td>
                           <td
                             style={{
@@ -2837,205 +2898,382 @@ function parseDespachoCSV(text) {
 
   return { info, productos };
 }
-function ModRecepcion({ toast, operarios }) {
-  const [tab, setTab] = useState("carga"); // carga | control | resumen
-  const [despacho, setDespacho] = useDB("rosarc_recepcion_v2", null);
-  const [operario, setOperario] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [camIdx, setCamIdx] = useState(null); // índice producto que se está fotografiando
-  const [editIdx, setEditIdx] = useState(null); // índice producto editando cantidad
-  // Polling cada 5 segundos — sincroniza con Sheet en todos los dispositivos
-  useEffect(() => {
-    function sincronizarRecepcion() {
-      fetch(`${APPS_SCRIPT_URL}?accion=leer_recepcion`)
-        .then((r) => r.json())
-        .then((d) => {
-          if (d.status === "ok" && d.despacho) {
-            setDespacho((prev) => {
-              // Si el remoto es una carga más nueva, siempre tomar el remoto
-              const mismasCarga =
-                prev?.info?.nroCarga === d.despacho.info.nroCarga;
-              if (mismasCarga) {
-                // Misma carga: conservar local solo si tiene edits más recientes
-                const localTieneEdits = prev?.productos?.some(
-                  (p) => p.cantReal !== null
-                );
-                if (localTieneEdits) return prev;
-              }
-              // Carga diferente o sin datos locales: tomar el remoto
-              return d.despacho;
-            });
-          }
-        })
-        .catch(() => {});
+// ═══════════════════════════════════════════════════════════════
+// MÓDULO RECEPCIÓN v3 — con historial, filtro 3 días, eliminar y sync fix
+// REEMPLAZAR desde "function ModRecepcion" hasta el cierre de la función (línea ~3554)
+// ═══════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════
+// MÓDULO RECEPCIÓN v4.1
+// Flujo: CSV → lista completa → 📷 foto → IA detecta
+//   · Matchea CSV → guarda automático (código+vencimiento), pide cantidad
+//   · No matchea → panel para cargar como producto extra
+// Sync: polling 5s igual que consolidados, trae datos del Sheet
+//
+// REEMPLAZAR desde "function useRecepcion" hasta el "}" de cierre de ModRecepcion
+// ═══════════════════════════════════════════════════════════════
+
+// ── Hook de sync para recepción (igual patrón que useConsolidados) ──
+function useRecepcion() {
+  const [despacho, setDespachoState] = useState(() => {
+    try {
+      const s = localStorage.getItem("rosarc_recepcion_v4");
+      return s ? JSON.parse(s) : null;
+    } catch {
+      return null;
     }
-    sincronizarRecepcion();
-    const t = setInterval(sincronizarRecepcion, 5000);
-    return () => clearInterval(t);
+  });
+  const [historial, setHistorialState] = useState(() => {
+    try {
+      const s = localStorage.getItem("rosarc_recepciones_v3");
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [syncOk, setSyncOk] = useState(false);
+  const [lastSync, setLastSync] = useState("");
+
+  const guardarDespacho = useCallback((fn) => {
+    setDespachoState((prev) => {
+      const next = typeof fn === "function" ? fn(prev) : fn;
+      try {
+        localStorage.setItem("rosarc_recepcion_v4", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
   }, []);
 
+  const guardarHistorial = useCallback((fn) => {
+    setHistorialState((prev) => {
+      const next = typeof fn === "function" ? fn(prev) : fn;
+      try {
+        localStorage.setItem("rosarc_recepciones_v3", JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  // Sync: trae el despacho activo del Sheet cada 5s
+  const sincronizar = useCallback(async () => {
+    try {
+      const r = await fetch(`${APPS_SCRIPT_URL}?accion=leer_recepcion`);
+      const d = await r.json();
+      if (d.status === "ok" && d.despacho) {
+        setDespachoState((prev) => {
+          const remoto = d.despacho;
+          if (!prev) {
+            localStorage.setItem("rosarc_recepcion_v4", JSON.stringify(remoto));
+            return remoto;
+          }
+          const mismasCarga = prev?.info?.nroCarga === remoto?.info?.nroCarga;
+          if (!mismasCarga) {
+            // Carga diferente: tomar remoto
+            localStorage.setItem("rosarc_recepcion_v4", JSON.stringify(remoto));
+            return remoto;
+          }
+          // Misma carga: merge producto a producto por _ts
+          const prodsMerged = (remoto.productos || []).map((rp) => {
+            const lp = (prev.productos || []).find(
+              (p) => p.id === rp.id || p.codigo === rp.codigo
+            );
+            if (!lp) return rp;
+            if (lp.cantReal === null && rp.cantReal !== null) return rp;
+            if (lp.cantReal !== null && rp.cantReal === null) return lp;
+            return (lp._ts || 0) >= (rp._ts || 0) ? lp : rp;
+          });
+          // Agregar productos extra locales (no estaban en CSV original)
+          const extras = (prev.productos || []).filter(
+            (p) => p.esExtra && !prodsMerged.find((m) => m.id === p.id)
+          );
+          const merged = { ...prev, productos: [...prodsMerged, ...extras] };
+          localStorage.setItem("rosarc_recepcion_v4", JSON.stringify(merged));
+          return merged;
+        });
+        setSyncOk(true);
+        setLastSync(
+          new Date().toLocaleTimeString("es-AR", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        );
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    sincronizar();
+  }, []);
+  useEffect(() => {
+    const t = setInterval(sincronizar, 5000);
+    return () => clearInterval(t);
+  }, [sincronizar]);
+
+  return {
+    despacho,
+    guardarDespacho,
+    historial,
+    guardarHistorial,
+    sincronizar,
+    syncOk,
+    lastSync,
+  };
+}
+
+// ── Componente principal ────────────────────────────────────────
+function ModRecepcion({ toast, operarios }) {
+  const {
+    despacho,
+    guardarDespacho,
+    historial,
+    guardarHistorial,
+    sincronizar,
+    syncOk,
+    lastSync,
+  } = useRecepcion();
+  const [tab, setTab] = useState("carga");
+  const [operario, setOperario] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("");
+  // focusIdx: índice del producto recién detectado por foto, para hacer scroll/highlight
+  const [focusIdx, setFocusIdx] = useState(null);
+  const focusRef = useRef(null);
+
+  // Scroll al producto detectado
+  useEffect(() => {
+    if (focusIdx !== null && focusRef.current) {
+      focusRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+      focusRef.current.querySelector("input[type='number']")?.focus();
+    }
+  }, [focusIdx]);
+
+  // Panel de confirmación — solo para productos NO encontrados en CSV
+  const [confirmPanel, setConfirmPanel] = useState(null);
+  // {
+  //   iaResult: { codigo, ean, descripcion, vencimiento },
+  //   matchIdx: número | null,   (índice en productos si matcheó)
+  //   cantReal: "",
+  //   esExtra: false
+  // }
+
+  // Historial: últimos 3 días, no ocultos
+  const hace3dias = new Date();
+  hace3dias.setDate(hace3dias.getDate() - 3);
+  hace3dias.setHours(0, 0, 0, 0);
+  const historialVisible = historial.filter((h) => {
+    if (h.oculta) return false;
+    return new Date(h.finalizadaEn || h.cargadoEn || 0) >= hace3dias;
+  });
+
+  // ── Cargar CSV ──────────────────────────────────────────────
   function handleCSV(e) {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const text = ev.target.result;
-        const { info, productos } = parseDespachoCSV(text);
+        const { info, productos } = parseDespachoCSV(ev.target.result);
         if (productos.length === 0) {
           toast("⚠️ No se encontraron productos en el CSV", "error");
           return;
         }
-        const nuevoDespacho = {
+        const nuevo = {
           info,
           productos,
           operario,
           cargadoEn: new Date().toISOString(),
         };
-        setDespacho(nuevoDespacho);
-        // Guardar al Sheet inmediatamente al cargar el CSV
+        guardarDespacho(nuevo);
         api.post("recepcion_despacho", {
-          info: nuevoDespacho.info,
-          operario: nuevoDespacho.operario,
-          productos: nuevoDespacho.productos,
+          info: nuevo.info,
+          operario: nuevo.operario,
+          productos: nuevo.productos,
           timestamp: new Date().toISOString(),
         });
         setTab("control");
         toast(
           `✅ ${productos.length} productos cargados · Carga ${info.nroCarga}`
         );
-      } catch (err) {
+      } catch {
         toast("❌ Error al leer el CSV", "error");
       }
     };
     reader.readAsText(file, "latin1");
   }
 
-  async function verificarFoto(e, idx) {
+  // ── Foto → IA detecta ───────────────────────────────────────
+  // ── Foto → Apps Script → IA detecta ────────────────────────
+  // REEMPLAZAR la función handleFoto en ModRecepcion
+  async function handleFoto(e) {
     const file = e.target.files[0];
     if (!file || !despacho) return;
     setLoading(true);
-    setCamIdx(idx);
+    setLoadingMsg("Analizando imagen con IA...");
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const res = await fetch("https://api.anthropic.com/v1/messages", {
+        // Extraer base64 sin el prefijo "data:image/jpeg;base64,"
+        const base64 = ev.target.result.split(",")[1];
+        const mediaType = file.type || "image/jpeg";
+
+        // Llamar al Apps Script proxy (no a Anthropic directamente)
+        const res = await fetch(APPS_SCRIPT_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 500,
-            messages: [
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "image",
-                    source: {
-                      type: "base64",
-                      media_type: file.type || "image/jpeg",
-                      data: ev.target.result.split(",")[1],
-                    },
-                  },
-                  {
-                    type: "text",
-                    text: `Analizá esta imagen de un producto alimenticio. Extraé SOLO en JSON sin markdown:
-{"codigo":"código interno del producto (numérico)","ean":"código de barras EAN (13 dígitos si visible)","descripcion":"nombre del producto","vencimiento":"fecha de vencimiento en formato YYYY-MM-DD o vacío si no se ve"}`,
-                  },
-                ],
-              },
-            ],
+            tipo: "analizar_foto",
+            data: { imageBase64: base64, mediaType },
           }),
+          // SIN mode: "no-cors" — necesitamos leer la respuesta
         });
+
         const d = await res.json();
-        const txt = d.content
-          .map((x) => x.text || "")
-          .join("")
-          .replace(/```json|```/g, "")
-          .trim();
-        const parsed = JSON.parse(txt);
 
-        // Buscar match en productos
-        const prods = [...despacho.productos];
-        const prod = prods[idx];
-
-        const matchCodigo =
-          parsed.codigo &&
-          prod.codigo &&
-          prod.codigo.replace(/^0+/, "") === parsed.codigo.replace(/^0+/, "");
-        const matchEAN = parsed.ean && prod.ean && prod.ean === parsed.ean;
-
-        if (matchCodigo || matchEAN) {
-          prods[idx] = {
-            ...prod,
-            fotoVerificada: true,
-            vencimiento: parsed.vencimiento || prod.vencimiento,
-            codigoIA: parsed.codigo,
-            eanIA: parsed.ean,
-          };
-          toast(`✅ Producto verificado: ${prod.descripcion}`);
-        } else {
-          toast(
-            `⚠️ Código no coincide. CSV: ${prod.codigo} · IA detectó: ${
-              parsed.codigo || "—"
-            }`,
-            "error"
-          );
-          prods[idx] = {
-            ...prod,
-            fotoVerificada: false,
-            errorFoto: `IA detectó: ${
-              parsed.codigo || parsed.ean || "desconocido"
-            }`,
-          };
+        if (d.status !== "ok" || !d.resultado) {
+          throw new Error(d.mensaje || "Sin resultado de IA");
         }
 
-        const actualizado = { ...despacho, productos: prods };
-        setDespacho(actualizado);
-        clearTimeout(window._recepcionTimer);
-        window._recepcionTimer = setTimeout(() => {
-          api.post("recepcion_despacho", {
-            info: actualizado.info,
-            operario,
-            productos: actualizado.productos,
-            timestamp: new Date().toISOString(),
+        const iaResult = d.resultado;
+
+        // Buscar match en productos del CSV
+        const prods = despacho.productos || [];
+        let matchIdx = null;
+        let matchScore = 0;
+        prods.forEach((p, i) => {
+          let score = 0;
+          if (iaResult.codigo && p.codigo) {
+            const iaCod = iaResult.codigo.replace(/^0+/, "");
+            const pCod = p.codigo.replace(/^0+/, "");
+            if (iaCod === pCod) score += 3;
+          }
+          if (iaResult.ean && p.ean && iaResult.ean === p.ean) score += 2;
+          if (score > matchScore) {
+            matchScore = score;
+            matchIdx = i;
+          }
+        });
+
+        if (matchScore > 0 && matchIdx !== null) {
+          // ✅ MATCH: guardar vencimiento automáticamente
+          const prodsMod = [...prods];
+          prodsMod[matchIdx] = {
+            ...prodsMod[matchIdx],
+            vencimiento: iaResult.vencimiento || prodsMod[matchIdx].vencimiento,
+            fotoVerificada: true,
+            _ts: Date.now(),
+          };
+          const actualizado = { ...despacho, productos: prodsMod };
+          guardarDespacho(actualizado);
+          clearTimeout(window._recepcionTimer);
+          window._recepcionTimer = setTimeout(() => {
+            api.post("recepcion_despacho", {
+              info: actualizado.info,
+              operario,
+              productos: actualizado.productos,
+              timestamp: new Date().toISOString(),
+            });
+          }, 1500);
+          setFocusIdx(matchIdx);
+          const prod = prods[matchIdx];
+          const vencMsg = iaResult.vencimiento
+            ? ` · Vence: ${iaResult.vencimiento}`
+            : "";
+          toast(`📷 ${prod.descripcion}${vencMsg} — ingresá la cantidad`);
+        } else {
+          // ❌ NO MATCH: panel para carga manual como extra
+          setConfirmPanel({
+            iaResult,
+            matchIdx: null,
+            cantReal: "",
+            esExtra: true,
           });
-        }, 1000);
+        }
       } catch (err) {
-        toast("⚠️ No se pudo leer la imagen, ingresá manualmente", "error");
+        console.error("handleFoto error:", err);
+        toast(
+          "⚠️ No se pudo analizar la imagen. Podés cargarlo manual.",
+          "error"
+        );
+        setConfirmPanel({
+          iaResult: { codigo: "", ean: "", descripcion: "", vencimiento: "" },
+          matchIdx: null,
+          cantReal: "",
+          esExtra: true,
+          manualError: true,
+        });
       } finally {
         setLoading(false);
-        setCamIdx(null);
+        setLoadingMsg("");
       }
     };
     reader.readAsDataURL(file);
   }
 
+  // ── Confirmar producto extra desde el panel ────────────────
+  function confirmarProducto() {
+    if (!confirmPanel || !despacho) return;
+    const { iaResult, cantReal } = confirmPanel;
+    const cant = parseInt(cantReal) || 0;
+    const prods = [...(despacho.productos || [])];
+
+    prods.push({
+      id: `extra-${Date.now()}`,
+      codigo: iaResult.codigo || "—",
+      ean: iaResult.ean || "",
+      descripcion: iaResult.descripcion || "Producto extra",
+      cantEsperada: 0,
+      cantReal: cant,
+      unidad: "BULTOS",
+      empresa: "",
+      factura: "",
+      estado: "extra",
+      vencimiento: iaResult.vencimiento || "",
+      fotoVerificada: true,
+      esExtra: true,
+      _ts: Date.now(),
+    });
+
+    const actualizado = { ...despacho, productos: prods };
+    guardarDespacho(actualizado);
+    setConfirmPanel(null);
+
+    clearTimeout(window._recepcionTimer);
+    window._recepcionTimer = setTimeout(() => {
+      api.post("recepcion_despacho", {
+        info: actualizado.info,
+        operario,
+        productos: actualizado.productos,
+        timestamp: new Date().toISOString(),
+      });
+    }, 1500);
+
+    toast("➕ Producto extra agregado");
+  }
+
+  // ── Editar cantidad manual desde la lista ──────────────────
   function setCantidad(idx, valor) {
     if (!despacho) return;
     const prods = [...despacho.productos];
     const prod = prods[idx];
-    const cantReal = parseInt(valor) || 0;
-    let estado = "pendiente";
-    if (cantReal > 0) {
-      estado = cantReal === prod.cantEsperada ? "ok" : "diferencia";
-    }
-    prods[idx] = { ...prod, cantReal, estado };
-    const nuevo = { ...despacho, productos: prods };
-    setDespacho(nuevo);
-    // Auto-guardar al Sheet cada vez que se modifica una cantidad
+    const cant = parseInt(valor) || 0;
+    const estado =
+      cant === prod.cantEsperada ? "ok" : cant > 0 ? "diferencia" : "pendiente";
+    prods[idx] = { ...prod, cantReal: cant, estado, _ts: Date.now() };
+    const actualizado = { ...despacho, productos: prods };
+    guardarDespacho(actualizado);
     clearTimeout(window._recepcionTimer);
     window._recepcionTimer = setTimeout(() => {
       api.post("recepcion_despacho", {
-        info: nuevo.info,
+        info: actualizado.info,
         operario,
-        productos: nuevo.productos,
+        productos: actualizado.productos,
         timestamp: new Date().toISOString(),
       });
-    }, 2000); // espera 2 segundos después del último cambio
+    }, 2000);
   }
 
-  function enviarAlSheet() {
+  // ── Finalizar ───────────────────────────────────────────────
+  function finalizarRecepcion() {
     if (!despacho) return;
     api.post("recepcion_despacho", {
       info: despacho.info,
@@ -3043,15 +3281,61 @@ function ModRecepcion({ toast, operarios }) {
       productos: despacho.productos,
       timestamp: new Date().toISOString(),
     });
-    toast("✅ Recepción enviada al Sheet");
+    const entrada = {
+      ...despacho,
+      finalizadaEn: new Date().toISOString(),
+      id: despacho.info?.nroCarga || Date.now(),
+      oculta: false,
+    };
+    guardarHistorial((prev) => {
+      const sinDup = prev.filter(
+        (h) => h.info?.nroCarga !== entrada.info?.nroCarga
+      );
+      return [entrada, ...sinDup];
+    });
+    guardarDespacho(null);
+    setTab("resumen");
   }
 
-  // ── TAB CARGA ─────────────────────────────────────────────
+  function ocultarRecepcion(nroCarga) {
+    guardarHistorial((prev) =>
+      prev.map((h) =>
+        h.info?.nroCarga === nroCarga ? { ...h, oculta: true } : h
+      )
+    );
+    toast("Recepción ocultada del listado");
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // RENDER — TAB CARGA
+  // ════════════════════════════════════════════════════════════
   if (tab === "carga")
     return (
       <div style={BS}>
         <div style={card()}>
           <div style={secTit}>📦 RECEPCIÓN DE MERCADERÍA</div>
+
+          {/* Indicador sync */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              marginBottom: "12px",
+            }}
+          >
+            <div
+              style={{
+                width: "8px",
+                height: "8px",
+                borderRadius: "50%",
+                background: syncOk ? C.green : C.muted,
+              }}
+            />
+            <span style={{ fontSize: "10px", color: C.muted }}>
+              {syncOk ? `Sincronizado ${lastSync}` : "Conectando..."}
+            </span>
+          </div>
 
           <div style={{ marginBottom: "12px" }}>
             <label style={lbl}>Operario que recepciona</label>
@@ -3089,7 +3373,6 @@ function ModRecepcion({ toast, operarios }) {
               onChange={handleCSV}
             />
           </label>
-
           <p
             style={{
               fontSize: "11px",
@@ -3098,23 +3381,66 @@ function ModRecepcion({ toast, operarios }) {
               lineHeight: 1.5,
             }}
           >
-            Cargá el archivo CSV que llega con cada despacho de Arcor. El
-            sistema va a extraer todos los productos automáticamente.
+            Cargá el archivo CSV de Arcor. El sistema extrae todos los productos
+            automáticamente.
           </p>
         </div>
 
         {despacho && (
           <div style={card({ borderColor: C.green })}>
-            <div style={secTit}>📋 ÚLTIMO DESPACHO CARGADO</div>
-            <div style={{ fontSize: "13px", marginBottom: "8px" }}>
+            <div style={secTit}>📋 DESPACHO EN CURSO</div>
+            <div style={{ fontSize: "13px", marginBottom: "4px" }}>
               <strong>Nro. Carga:</strong> {despacho.info.nroCarga} ·{" "}
               <strong>Fecha:</strong> {despacho.info.fecha}
             </div>
             <div
-              style={{ fontSize: "12px", color: C.muted, marginBottom: "12px" }}
+              style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}
             >
               Chofer: {despacho.info.chofer} · Pallets: {despacho.info.pallets}
             </div>
+            {(() => {
+              const total = (despacho.productos || []).length;
+              const verificados = (despacho.productos || []).filter(
+                (p) => p.fotoVerificada || p.cantReal !== null
+              ).length;
+              return (
+                <div style={{ marginBottom: "10px" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      fontSize: "11px",
+                      color: C.muted,
+                      marginBottom: "4px",
+                    }}
+                  >
+                    <span>Progreso</span>
+                    <span>
+                      {verificados}/{total}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      height: "4px",
+                      background: C.bord,
+                      borderRadius: "2px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "100%",
+                        width: `${
+                          total > 0 ? (verificados / total) * 100 : 0
+                        }%`,
+                        background: C.green,
+                        borderRadius: "2px",
+                        transition: "width .3s",
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })()}
             <button
               style={btn({
                 background: C.green,
@@ -3128,32 +3454,109 @@ function ModRecepcion({ toast, operarios }) {
             </button>
           </div>
         )}
+
+        {historialVisible.length > 0 && (
+          <div style={card()}>
+            <div style={secTit}>🗂 ÚLTIMAS RECEPCIONES (3 días)</div>
+            {historialVisible.map((h) => {
+              const ok = (h.productos || []).filter(
+                (p) => p.estado === "ok"
+              ).length;
+              const diff = (h.productos || []).filter(
+                (p) => p.estado === "diferencia"
+              ).length;
+              const total = (h.productos || []).length;
+              const fechaStr = h.finalizadaEn
+                ? new Date(h.finalizadaEn).toLocaleDateString("es-AR", {
+                    day: "2-digit",
+                    month: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : "—";
+              return (
+                <div
+                  key={h.info?.nroCarga || h.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    padding: "10px 0",
+                    borderBottom: `1px solid ${C.bord}`,
+                  }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: "13px" }}>
+                      Carga #{h.info?.nroCarga}
+                    </div>
+                    <div style={{ fontSize: "11px", color: C.muted }}>
+                      {fechaStr} · {h.operario || "—"}
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: "6px",
+                        marginTop: "4px",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <span style={pill(C.green)}>{ok} OK</span>
+                      {diff > 0 && (
+                        <span style={pill(C.orange)}>{diff} difer.</span>
+                      )}
+                      <span style={pill(C.muted)}>{total} total</span>
+                    </div>
+                  </div>
+                  <button
+                    style={btn({
+                      background: "transparent",
+                      color: C.red,
+                      border: `1px solid ${C.bord}`,
+                      padding: "6px 10px",
+                      fontSize: "12px",
+                    })}
+                    title="Ocultar (los datos se conservan para métricas)"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `¿Ocultar Carga #${h.info?.nroCarga}? Los datos se conservan para métricas.`
+                        )
+                      )
+                        ocultarRecepcion(h.info?.nroCarga);
+                    }}
+                  >
+                    🗑
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     );
 
-  // ── TAB CONTROL ───────────────────────────────────────────
+  // ════════════════════════════════════════════════════════════
+  // RENDER — TAB CONTROL
+  // ════════════════════════════════════════════════════════════
   if (tab === "control" && despacho) {
-    const total = despacho.productos.length;
-    const ok = despacho.productos.filter((p) => p.estado === "ok").length;
-    const diff = despacho.productos.filter(
-      (p) => p.estado === "diferencia"
-    ).length;
-    const pend = despacho.productos.filter(
-      (p) => p.estado === "pendiente"
-    ).length;
-    const pct = total > 0 ? Math.round(((ok + diff) / total) * 100) : 0;
-
-    // Agrupar por empresa
-    const empresas = [...new Set(despacho.productos.map((p) => p.empresa))];
+    const prods = despacho.productos || [];
+    const total = prods.length;
+    const ok = prods.filter((p) => p.estado === "ok").length;
+    const diff = prods.filter((p) => p.estado === "diferencia").length;
+    const pend = prods.filter((p) => p.estado === "pendiente").length;
+    const extra = prods.filter((p) => p.estado === "extra").length;
+    const pct = total > 0 ? Math.round(((ok + diff + extra) / total) * 100) : 0;
+    const empresas = [...new Set(prods.map((p) => p.empresa || "EXTRA"))];
 
     return (
       <div style={BS}>
+        {/* Spinner de carga IA */}
         {loading && (
           <div
             style={{
               position: "fixed",
               inset: 0,
-              background: "rgba(0,0,0,.7)",
+              background: "rgba(0,0,0,.8)",
               zIndex: 2000,
               display: "flex",
               alignItems: "center",
@@ -3164,16 +3567,220 @@ function ModRecepcion({ toast, operarios }) {
           >
             <div
               style={{
-                width: "48px",
-                height: "48px",
+                width: "52px",
+                height: "52px",
                 border: `4px solid ${C.accent}`,
                 borderTopColor: "transparent",
                 borderRadius: "50%",
                 animation: "spin 1s linear infinite",
               }}
             />
-            <div style={{ color: "#fff", fontSize: "14px" }}>
-              Analizando imagen con IA...
+            <div style={{ color: "#fff", fontSize: "14px" }}>{loadingMsg}</div>
+          </div>
+        )}
+
+        {/* Panel — SOLO para productos no encontrados en CSV */}
+        {confirmPanel && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,.85)",
+              zIndex: 1500,
+              display: "flex",
+              alignItems: "flex-end",
+              justifyContent: "center",
+            }}
+          >
+            <div
+              style={{
+                ...card({ borderColor: C.orange }),
+                width: "100%",
+                maxWidth: "500px",
+                borderRadius: "16px 16px 0 0",
+                padding: "20px",
+                maxHeight: "90vh",
+                overflowY: "auto",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "14px",
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: "15px" }}>
+                  ⚠️ Producto no encontrado en CSV
+                </div>
+                <button
+                  style={btn({
+                    background: C.surf2,
+                    color: C.muted,
+                    padding: "4px 10px",
+                    fontSize: "12px",
+                  })}
+                  onClick={() => setConfirmPanel(null)}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Lo que detectó la IA */}
+              <div
+                style={{
+                  background: C.surf2,
+                  borderRadius: "8px",
+                  padding: "12px",
+                  marginBottom: "14px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "10px",
+                    color: C.blue,
+                    fontWeight: 700,
+                    letterSpacing: "1px",
+                    marginBottom: "8px",
+                  }}
+                >
+                  📷 DETECTADO POR IA
+                </div>
+                <div
+                  style={{
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    marginBottom: "4px",
+                  }}
+                >
+                  {confirmPanel.iaResult.descripcion || "—"}
+                </div>
+                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                  {confirmPanel.iaResult.codigo && (
+                    <span style={pill(C.blue)}>
+                      Cód: {confirmPanel.iaResult.codigo}
+                    </span>
+                  )}
+                  {confirmPanel.iaResult.vencimiento &&
+                    (() => {
+                      const st = vencSt(confirmPanel.iaResult.vencimiento);
+                      return (
+                        <span style={pill(st.c)}>
+                          Vence: {confirmPanel.iaResult.vencimiento} · {st.l}
+                        </span>
+                      );
+                    })()}
+                </div>
+              </div>
+
+              {/* Campos editables */}
+              <div
+                style={{
+                  background: "rgba(255,140,66,.08)",
+                  border: `1px solid ${C.orange}40`,
+                  borderRadius: "8px",
+                  padding: "12px",
+                  marginBottom: "14px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "11px",
+                    color: C.orange,
+                    marginBottom: "10px",
+                  }}
+                >
+                  Se va a guardar como <strong>producto extra</strong>. Editá
+                  los datos si es necesario.
+                </div>
+                <label style={lbl}>Descripción</label>
+                <input
+                  style={{ ...inp, marginBottom: "6px" }}
+                  value={confirmPanel.iaResult.descripcion || ""}
+                  onChange={(e) =>
+                    setConfirmPanel((p) => ({
+                      ...p,
+                      iaResult: { ...p.iaResult, descripcion: e.target.value },
+                    }))
+                  }
+                  placeholder="Nombre del producto"
+                />
+                <label style={lbl}>Código interno</label>
+                <input
+                  style={{ ...inp, marginBottom: "6px" }}
+                  value={confirmPanel.iaResult.codigo || ""}
+                  onChange={(e) =>
+                    setConfirmPanel((p) => ({
+                      ...p,
+                      iaResult: { ...p.iaResult, codigo: e.target.value },
+                    }))
+                  }
+                  placeholder="Ej: 14361"
+                />
+                <label style={lbl}>Fecha vencimiento</label>
+                <input
+                  style={inp}
+                  type="date"
+                  value={confirmPanel.iaResult.vencimiento || ""}
+                  onChange={(e) =>
+                    setConfirmPanel((p) => ({
+                      ...p,
+                      iaResult: { ...p.iaResult, vencimiento: e.target.value },
+                    }))
+                  }
+                />
+              </div>
+
+              {/* Cantidad */}
+              <div style={{ marginBottom: "16px" }}>
+                <label style={{ ...lbl, fontSize: "12px" }}>
+                  Cantidad de bultos
+                </label>
+                <input
+                  type="number"
+                  style={{
+                    ...inp,
+                    fontSize: "28px",
+                    fontWeight: 900,
+                    textAlign: "center",
+                    padding: "14px",
+                    borderColor: C.orange,
+                  }}
+                  placeholder="0"
+                  value={confirmPanel.cantReal}
+                  onChange={(e) =>
+                    setConfirmPanel((p) => ({ ...p, cantReal: e.target.value }))
+                  }
+                  autoFocus
+                />
+              </div>
+
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button
+                  style={btn({
+                    background: "transparent",
+                    color: C.muted,
+                    border: `1px solid ${C.bord}`,
+                    flex: 1,
+                  })}
+                  onClick={() => setConfirmPanel(null)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  style={btn({
+                    background: `linear-gradient(135deg,${C.orange},#e67e22)`,
+                    color: "#fff",
+                    fontWeight: 700,
+                    flex: 2,
+                    fontSize: "14px",
+                  })}
+                  onClick={confirmarProducto}
+                >
+                  ➕ Guardar como extra
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -3184,15 +3791,27 @@ function ModRecepcion({ toast, operarios }) {
             style={{
               display: "flex",
               justifyContent: "space-between",
+              alignItems: "center",
               marginBottom: "8px",
             }}
           >
             <span style={{ fontWeight: 700, fontSize: "15px" }}>
               Carga #{despacho.info.nroCarga}
             </span>
-            <span style={{ fontSize: "12px", color: C.muted }}>
-              {despacho.info.fecha}
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "11px", color: C.muted }}>
+                {despacho.info.fecha}
+              </span>
+              <div
+                style={{
+                  width: "7px",
+                  height: "7px",
+                  borderRadius: "50%",
+                  background: syncOk ? C.green : C.muted,
+                }}
+                title={syncOk ? `Sync ${lastSync}` : "Sin sync"}
+              />
+            </div>
           </div>
           <div
             style={{
@@ -3218,39 +3837,79 @@ function ModRecepcion({ toast, operarios }) {
             {diff > 0 && (
               <span style={pill(C.orange)}>⚠ {diff} diferencias</span>
             )}
+            {extra > 0 && <span style={pill(C.blue)}>➕ {extra} extras</span>}
           </div>
         </div>
 
-        {/* Productos por empresa */}
+        {/* Botón foto global — captura nueva foto para detectar producto */}
+        <label
+          style={{
+            ...btn({
+              background: `linear-gradient(135deg,${C.accent},#5b21b6)`,
+              color: "#fff",
+              width: "100%",
+              fontSize: "15px",
+              padding: "16px",
+            }),
+            cursor: "pointer",
+          }}
+        >
+          📷 FOTOGRAFIAR PRODUCTO
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            style={{ display: "none" }}
+            onChange={handleFoto}
+          />
+        </label>
+
+        {/* Lista de productos por empresa */}
         {empresas.map((empresa) => {
-          const prods = despacho.productos.filter((p) => p.empresa === empresa);
+          const prodsEmp = prods.filter(
+            (p) => (p.empresa || "EXTRA") === empresa
+          );
           return (
             <div key={empresa} style={card()}>
-              <div style={{ ...secTit, color: C.gold }}>
-                {empresa} — {prods.length} productos
+              <div
+                style={{
+                  ...secTit,
+                  color: empresa === "EXTRA" ? C.blue : C.gold,
+                }}
+              >
+                {empresa === "EXTRA" ? "➕ PRODUCTOS EXTRA" : empresa} —{" "}
+                {prodsEmp.length} productos
               </div>
-              {prods.map((prod, localIdx) => {
-                const idx = despacho.productos.indexOf(prod);
+              {prodsEmp.map((prod) => {
+                const idx = prods.indexOf(prod);
                 const esOk = prod.estado === "ok";
                 const esDiff = prod.estado === "diferencia";
                 const esPend = prod.estado === "pendiente";
-
-                const cardColor = esOk ? C.green : esDiff ? C.orange : C.bord;
-                const bgColor = esOk
-                  ? "rgba(6,214,160,.06)"
+                const esExtra = prod.estado === "extra";
+                const isFocused = focusIdx === idx;
+                const borderColor = isFocused
+                  ? C.accent
+                  : esOk
+                  ? C.green
                   : esDiff
-                  ? "rgba(255,140,66,.06)"
-                  : C.surf2;
+                  ? C.orange
+                  : esExtra
+                  ? C.blue
+                  : C.bord;
 
                 return (
                   <div
                     key={prod.id}
+                    ref={isFocused ? focusRef : null}
                     style={{
-                      background: bgColor,
-                      border: `1px solid ${cardColor}`,
-                      borderRadius: "10px",
-                      padding: "12px",
-                      marginBottom: "8px",
+                      borderLeft: `3px solid ${borderColor}`,
+                      paddingLeft: "10px",
+                      marginBottom: "12px",
+                      paddingBottom: "10px",
+                      borderBottom: `1px solid ${C.bord}`,
+                      background: isFocused ? `${C.accent}12` : "transparent",
+                      borderRadius: isFocused ? "0 8px 8px 0" : undefined,
+                      transition: "background .4s",
                     }}
                   >
                     <div
@@ -3264,8 +3923,8 @@ function ModRecepcion({ toast, operarios }) {
                       <div style={{ flex: 1 }}>
                         <div
                           style={{
+                            fontWeight: 700,
                             fontSize: "13px",
-                            fontWeight: 600,
                             lineHeight: 1.3,
                           }}
                         >
@@ -3278,31 +3937,30 @@ function ModRecepcion({ toast, operarios }) {
                             marginTop: "2px",
                           }}
                         >
-                          Cód: {prod.codigo}{" "}
-                          {prod.ean ? `· EAN: ${prod.ean}` : ""}
+                          Cód: {prod.codigo}
+                          {prod.factura ? ` · Fact: ${prod.factura}` : ""}
+                          {prod.fotoVerificada && (
+                            <span style={{ color: C.green, marginLeft: "6px" }}>
+                              📷✓
+                            </span>
+                          )}
                         </div>
-                        {prod.vencimiento && (
-                          <div
-                            style={{
-                              fontSize: "10px",
-                              color: C.blue,
-                              marginTop: "2px",
-                            }}
-                          >
-                            📅 Vence: {prod.vencimiento}
-                          </div>
-                        )}
-                        {prod.errorFoto && (
-                          <div
-                            style={{
-                              fontSize: "10px",
-                              color: C.red,
-                              marginTop: "2px",
-                            }}
-                          >
-                            ⚠ {prod.errorFoto}
-                          </div>
-                        )}
+                        {prod.vencimiento &&
+                          (() => {
+                            const st = vencSt(prod.vencimiento);
+                            return (
+                              <span
+                                style={{
+                                  ...pill(st.c),
+                                  marginTop: "4px",
+                                  display: "inline-flex",
+                                  fontSize: "9px",
+                                }}
+                              >
+                                Vence {prod.vencimiento} · {st.l}
+                              </span>
+                            );
+                          })()}
                       </div>
                       <div
                         style={{
@@ -3311,14 +3969,8 @@ function ModRecepcion({ toast, operarios }) {
                           marginLeft: "8px",
                         }}
                       >
-                        <div
-                          style={{
-                            fontSize: "20px",
-                            fontWeight: 900,
-                            color: C.blue,
-                          }}
-                        >
-                          {prod.cantEsperada}
+                        <div style={{ fontWeight: 700, fontSize: "16px" }}>
+                          {esExtra ? "—" : prod.cantEsperada}
                         </div>
                         <div style={{ fontSize: "9px", color: C.muted }}>
                           {prod.unidad}
@@ -3326,6 +3978,7 @@ function ModRecepcion({ toast, operarios }) {
                       </div>
                     </div>
 
+                    {/* Input cantidad manual */}
                     <div
                       style={{
                         display: "flex",
@@ -3333,33 +3986,6 @@ function ModRecepcion({ toast, operarios }) {
                         alignItems: "center",
                       }}
                     >
-                      {/* Foto */}
-                      <label
-                        style={{
-                          ...btn({
-                            background: prod.fotoVerificada ? C.green : C.surf,
-                            color: prod.fotoVerificada ? "#0a0c10" : C.muted,
-                            border: `1px solid ${
-                              prod.fotoVerificada ? C.green : C.bord
-                            }`,
-                            fontSize: "12px",
-                            padding: "8px 10px",
-                            flexShrink: 0,
-                          }),
-                          cursor: "pointer",
-                        }}
-                      >
-                        {prod.fotoVerificada ? "✓ Foto" : "📷"}
-                        <input
-                          type="file"
-                          accept="image/*"
-                          capture="environment"
-                          style={{ display: "none" }}
-                          onChange={(e) => verificarFoto(e, idx)}
-                        />
-                      </label>
-
-                      {/* Cantidad real */}
                       <div style={{ flex: 1 }}>
                         <input
                           type="number"
@@ -3375,16 +4001,17 @@ function ModRecepcion({ toast, operarios }) {
                               : C.bord,
                             color: esOk ? C.green : esDiff ? C.orange : C.text,
                           }}
-                          placeholder={`Esperado: ${prod.cantEsperada}`}
+                          placeholder={
+                            esExtra ? "Cantidad" : `Esp: ${prod.cantEsperada}`
+                          }
                           value={prod.cantReal ?? ""}
                           onChange={(e) => setCantidad(idx, e.target.value)}
                         />
                       </div>
-
-                      {/* Estado */}
-                      <div style={{ flexShrink: 0, fontSize: "24px" }}>
+                      <div style={{ fontSize: "24px", flexShrink: 0 }}>
                         {esOk && "✅"}
                         {esDiff && "⚠️"}
+                        {esExtra && "➕"}
                         {esPend && <span style={{ color: C.muted }}>○</span>}
                       </div>
                     </div>
@@ -3424,10 +4051,7 @@ function ModRecepcion({ toast, operarios }) {
               padding: "14px",
               marginBottom: "8px",
             })}
-            onClick={() => {
-              enviarAlSheet();
-              setTab("resumen");
-            }}
+            onClick={finalizarRecepcion}
           >
             ✓ FINALIZAR Y ENVIAR AL SHEET
           </button>
@@ -3447,11 +4071,23 @@ function ModRecepcion({ toast, operarios }) {
     );
   }
 
-  // ── TAB RESUMEN ───────────────────────────────────────────
-  if (tab === "resumen" && despacho) {
-    const ok = despacho.productos.filter((p) => p.estado === "ok");
-    const diff = despacho.productos.filter((p) => p.estado === "diferencia");
-    const pend = despacho.productos.filter((p) => p.estado === "pendiente");
+  // ════════════════════════════════════════════════════════════
+  // RENDER — RESUMEN POST-FINALIZACIÓN
+  // ════════════════════════════════════════════════════════════
+  if (tab === "resumen") {
+    const ultima = historial[0];
+    if (!ultima) {
+      setTab("carga");
+      return null;
+    }
+    const ok = (ultima.productos || []).filter((p) => p.estado === "ok");
+    const diff = (ultima.productos || []).filter(
+      (p) => p.estado === "diferencia"
+    );
+    const extra = (ultima.productos || []).filter((p) => p.estado === "extra");
+    const pend = (ultima.productos || []).filter(
+      (p) => p.estado === "pendiente"
+    );
 
     return (
       <div style={BS}>
@@ -3467,27 +4103,28 @@ function ModRecepcion({ toast, operarios }) {
             Recepción completada
           </div>
           <div style={{ fontSize: "12px", color: C.muted, marginTop: "4px" }}>
-            Carga #{despacho.info.nroCarga}
+            Carga #{ultima.info?.nroCarga}
           </div>
         </div>
 
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr 1fr 1fr",
-            gap: "8px",
+            gridTemplateColumns: "1fr 1fr 1fr 1fr",
+            gap: "6px",
           }}
         >
           {[
             [ok.length, "✓ OK", C.green],
             [diff.length, "⚠ Difer.", C.orange],
-            [pend.length, "Pend.", C.muted],
+            [extra.length, "➕ Extra", C.blue],
+            [pend.length, "⏳ Pend.", C.muted],
           ].map(([v, l, c]) => (
-            <div key={l} style={card({ padding: "12px", textAlign: "center" })}>
-              <div style={{ fontSize: "24px", fontWeight: 900, color: c }}>
+            <div key={l} style={card({ padding: "10px", textAlign: "center" })}>
+              <div style={{ fontSize: "22px", fontWeight: 900, color: c }}>
                 {v}
               </div>
-              <div style={{ fontSize: "10px", color: C.muted }}>{l}</div>
+              <div style={{ fontSize: "9px", color: C.muted }}>{l}</div>
             </div>
           ))}
         </div>
@@ -3522,10 +4159,7 @@ function ModRecepcion({ toast, operarios }) {
             fontSize: "14px",
             padding: "14px",
           })}
-          onClick={() => {
-            setDespacho(null);
-            setTab("carga");
-          }}
+          onClick={() => setTab("carga")}
         >
           + Nueva recepción
         </button>
@@ -3533,6 +4167,7 @@ function ModRecepcion({ toast, operarios }) {
     );
   }
 
+  // Fallback
   return (
     <div style={BS}>
       <div style={{ textAlign: "center", color: C.muted, padding: "40px" }}>
@@ -3566,6 +4201,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
   const [fOps, sfo] = useState([]);
   const [fCtrl, sfc] = useState("");
   const [fDivisiones, setFDivisiones] = useState({});
+  const [armarOpId, setArmarOpId] = useState(null); // operario seleccionado para armar
 
   const [xlsData, setXLS] = useState({
     sections: [],
@@ -3915,7 +4551,272 @@ function ModArmado({ toast, operarios, cons, setCons }) {
       </div>
     );
   }
+  if (screen === "armar_movil") {
+    const c = cons.find((x) => x.id === currentId);
+    if (!c) return null;
 
+    // Si no eligió operario todavía → mostrar selector
+    if (!armarOpId) {
+      return (
+        <div style={BS}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+            <button
+              style={btn({ background: "transparent", color: C.muted, border: `1px solid ${C.bord}`, padding: "6px 12px" })}
+              onClick={() => setScr("list")}
+            >
+              ← Volver
+            </button>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: "15px" }}>#{c.numero}</div>
+              <div style={{ fontSize: "11px", color: C.muted }}>{c.fecha}</div>
+            </div>
+          </div>
+
+          <div style={card({ borderColor: C.accent })}>
+            <div style={secTit}>👷 ¿QUIÉN SOS?</div>
+            <p style={{ fontSize: "12px", color: C.muted, marginBottom: "12px" }}>
+              Elegí tu nombre para ver tus productos asignados.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              {c.activeOps.map((op) => (
+                <button
+                  key={op.id}
+                  style={btn({
+                    background: op.finished ? C.surf2 : `${op.color}18`,
+                    color: op.finished ? C.muted : op.color,
+                    border: `2px solid ${op.finished ? C.bord : op.color}`,
+                    fontSize: "15px",
+                    padding: "14px",
+                    justifyContent: "flex-start",
+                    gap: "12px",
+                    opacity: op.finished ? 0.5 : 1,
+                  })}
+                  onClick={() => !op.finished && setArmarOpId(op.id)}
+                >
+                  <div style={{
+                    width: "36px", height: "36px", borderRadius: "50%",
+                    background: op.color, display: "flex", alignItems: "center",
+                    justifyContent: "center", fontSize: "16px", fontWeight: 700,
+                    color: "#fff", flexShrink: 0,
+                  }}>
+                    {op.nombre.charAt(0)}
+                  </div>
+                  <div style={{ textAlign: "left" }}>
+                    <div style={{ fontWeight: 700 }}>{op.nombre}</div>
+                    <div style={{ fontSize: "11px", opacity: 0.7 }}>
+                      {op.finished ? "✅ Ya finalizó" : `${(op.divisiones || []).join(" · ") || "Todas las divisiones"}`}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Operario seleccionado → mostrar sus productos
+    const op = c.activeOps.find((o) => o.id === armarOpId);
+    if (!op) return null;
+
+    const divOp = op.divisiones || [];
+    const lineasOp = divOp.length > 0
+      ? c.lines.filter((l) => divOp.includes(l.seccion))
+      : c.lines;
+
+    const marcadas = lineasOp.filter((l) => l.estado === "ok").length;
+    const total = lineasOp.length;
+    const pct = total > 0 ? Math.round((marcadas / total) * 100) : 0;
+    const todasListas = marcadas === total;
+
+    const secciones = [...new Set(lineasOp.map((l) => l.seccion))];
+
+    function marcarLinea(lineId) {
+      setCons((cs) => cs.map((x) => {
+        if (x.id !== currentId) return x;
+        const nuevasLines = x.lines.map((l) =>
+          l.id === lineId
+            ? { ...l, estado: l.estado === "ok" ? null : "ok", operario: op.nombre, ts: Date.now() }
+            : l
+        );
+        // Sincronizar al Sheet
+        const line = x.lines.find((l) => l.id === lineId);
+        const nuevoEstado = line?.estado === "ok" ? null : "ok";
+        if (line && nuevoEstado === "ok") {
+          api.post("actualizar_linea", {
+            consId: String(currentId),
+            codigo: line.codigo,
+            descripcion: line.descripcion,
+            estado: "ok",
+            motivo: "",
+            operario: op.nombre,
+          });
+        }
+        return { ...x, lines: nuevasLines };
+      }));
+    }
+
+    function finalizarMiParte() {
+      finalizarOp(currentId, armarOpId);
+      toast(`✅ ${op.nombre} finalizó su parte`);
+      setArmarOpId(null);
+      setScr("list");
+    }
+
+    return (
+      <div style={BS}>
+        {/* Header */}
+        <div style={card({ padding: "12px 14px" })}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
+            <button
+              style={btn({ background: "transparent", color: C.muted, border: `1px solid ${C.bord}`, padding: "5px 10px", fontSize: "12px" })}
+              onClick={() => setArmarOpId(null)}
+            >
+              ← Cambiar
+            </button>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700, fontSize: "14px" }}>#{c.numero} · {op.nombre}</div>
+              <div style={{ fontSize: "11px", color: C.muted }}>
+                {divOp.join(" · ") || "Todas las divisiones"}
+              </div>
+            </div>
+            <div style={{
+              width: "44px", height: "44px", borderRadius: "50%",
+              background: op.color, display: "flex", alignItems: "center",
+              justifyContent: "center", fontSize: "18px", fontWeight: 700, color: "#fff",
+            }}>
+              {op.nombre.charAt(0)}
+            </div>
+          </div>
+
+          {/* Barra de progreso */}
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: C.muted, marginBottom: "4px" }}>
+            <span>Progreso</span>
+            <span style={{ fontWeight: 700, color: todasListas ? C.green : C.text }}>{marcadas}/{total}</span>
+          </div>
+          <div style={{ height: "8px", background: C.bord, borderRadius: "4px" }}>
+            <div style={{
+              height: "100%",
+              width: `${pct}%`,
+              background: todasListas ? C.green : `linear-gradient(90deg,${op.color},${C.blue})`,
+              borderRadius: "4px",
+              transition: "width .3s",
+            }} />
+          </div>
+        </div>
+
+        {/* Productos por sección */}
+        {secciones.map((sec) => {
+          const prods = lineasOp.filter((l) => l.seccion === sec);
+          const secOk = prods.filter((l) => l.estado === "ok").length;
+          return (
+            <div key={sec} style={card()}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                <span style={{ ...secTit, marginBottom: 0, paddingBottom: 0, borderBottom: "none", color: op.color }}>
+                  {sec}
+                </span>
+                <span style={pill(secOk === prods.length ? C.green : C.muted)}>
+                  {secOk}/{prods.length}
+                </span>
+              </div>
+
+              {prods.map((p) => {
+                const esOk = p.estado === "ok";
+                return (
+                  <div
+                    key={p.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "12px",
+                      padding: "11px 0",
+                      borderBottom: `1px solid ${C.bord}`,
+                      opacity: esOk ? 0.5 : 1,
+                      transition: "opacity .2s",
+                    }}
+                  >
+                    {/* Pasillo */}
+                    <div style={{
+                      width: "32px", height: "32px", borderRadius: "6px",
+                      background: C.surf2, display: "flex", alignItems: "center",
+                      justifyContent: "center", fontSize: "10px", fontWeight: 700,
+                      color: C.muted, flexShrink: 0,
+                    }}>
+                      {p.pasillo || "—"}
+                    </div>
+
+                    {/* Info producto */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: "13px", fontWeight: 600, lineHeight: 1.3,
+                        textDecoration: esOk ? "line-through" : "none",
+                        color: esOk ? C.muted : C.text,
+                      }}>
+                        {p.descripcion}
+                      </div>
+                      <div style={{ fontSize: "10px", color: C.muted, marginTop: "2px" }}>
+                        {p.codigo}
+                        {p.unit === "BU" && p.bu !== "0"
+                          ? ` · ${p.qty} BU · ${p.bu} UN`
+                          : p.unit === "BU"
+                          ? ` · ${p.qty} BU`
+                          : ` · ${p.qty} ${p.unit}`}
+                      </div>
+                    </div>
+
+                    {/* Cantidad grande */}
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontSize: "22px", fontWeight: 900, color: esOk ? C.green : op.color }}>
+                        {p.unit === "BU" ? p.qty : p.qty}
+                      </div>
+                      <div style={{ fontSize: "9px", color: C.muted }}>{p.unit}</div>
+                    </div>
+
+                    {/* Botón check */}
+                    <button
+                      style={{
+                        width: "44px", height: "44px", borderRadius: "10px",
+                        border: `2px solid ${esOk ? C.green : C.bord}`,
+                        background: esOk ? C.green : "transparent",
+                        color: esOk ? "#0a0c10" : C.muted,
+                        fontSize: "20px", cursor: "pointer",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        flexShrink: 0, transition: "all .15s",
+                      }}
+                      onClick={() => marcarLinea(p.id)}
+                    >
+                      {esOk ? "✓" : "○"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+
+        {/* Botón finalizar */}
+        <div style={card()}>
+          <button
+            style={btn({
+              background: todasListas
+                ? `linear-gradient(135deg,${C.green},#059669)`
+                : C.surf2,
+              color: todasListas ? "#0a0c10" : C.muted,
+              fontWeight: 700,
+              width: "100%",
+              fontSize: "15px",
+              padding: "16px",
+              opacity: todasListas ? 1 : 0.6,
+            })}
+            disabled={!todasListas}
+            onClick={finalizarMiParte}
+          >
+            {todasListas ? "✅ FINALIZAR MI PARTE" : `⏳ Faltan ${total - marcadas} productos`}
+          </button>
+        </div>
+      </div>
+    );
+  }
   // ── Setup screen ───────────────────────────────────────────
   if (screen === "setup")
     return (
@@ -4476,6 +5377,22 @@ function ModArmado({ toast, operarios, cons, setCons }) {
             <div style={{ display: "flex", gap: "7px" }}>
               <button
                 style={btn({
+                  background: `linear-gradient(135deg,${C.accent},#5b21b6)`,
+                  color: "#fff",
+                  flex: 2,
+                  fontSize: "12px",
+                  padding: "8px",
+                })}
+                onClick={() => {
+                  setCId(c.id);
+                  setArmarOpId(null);
+                  setScr("armar_movil");
+                }}
+              >
+                📱 Armar
+              </button>
+              <button
+                style={btn({
                   background: C.surf2,
                   color: C.muted,
                   border: `1px solid ${C.bord}`,
@@ -4488,7 +5405,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
                   setScr("print");
                 }}
               >
-                🖨 Reimprimir
+                🖨
               </button>
               <button
                 style={btn({
@@ -5100,11 +6017,15 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
                       <div style={{ fontSize: "10px", color: C.muted }}>
                         {line.codigo} ·{" "}
                         {line.bu && line.bu !== "0" && line.unit !== "BU" && (
-                          <strong
-                            style={{ color: C.orange, marginRight: "6px" }}
+                          <span
+                            style={{
+                              color: C.muted,
+                              marginRight: "6px",
+                              fontSize: "9px",
+                            }}
                           >
-                            {line.bu} BU ·
-                          </strong>
+                            ({line.bu} BU)
+                          </span>
                         )}
                         <strong style={{ color: C.text }}>
                           {line.qty} {line.unit}
