@@ -149,9 +149,13 @@ function useConsolidados() {
       const merged = remoto.map((rc) => {
         const local = prev.find((lc) => String(lc.id) === String(rc.id));
         if (!local) return rc;
-        const localMarcadas = (local.lines || []).filter((l) => l.estado).length;
-        const remotoMarcadas = (rc.lines || []).filter((l) => l.estado).length;
-        const localGana = localMarcadas >= remotoMarcadas;
+        // DESPUÉS:
+// "ok" y "error" pesan más que "armado"
+const localScore = (local.lines || []).reduce((a, l) => 
+  a + (l.estado === "ok" || l.estado === "error" ? 2 : l.estado === "armado" ? 1 : 0), 0);
+const remotoScore = (rc.lines || []).reduce((a, l) => 
+  a + (l.estado === "ok" || l.estado === "error" ? 2 : l.estado === "armado" ? 1 : 0), 0);
+const localGana = localScore >= remotoScore;
 
         // Decidir qué activeOps usar:
         // El remoto tiene divisiones si algún op tiene divisiones.length > 0
@@ -172,7 +176,8 @@ function useConsolidados() {
           if (!lop) return rop;
           return {
             ...rop,                          // base: remoto (tiene divisiones)
-            startTime: lop.startTime || rop.startTime,
+            // DESPUÉS:
+startTime: lop.startTime || rop.startTime || local.startTime || rc.startTime,
             endTime: lop.endTime || rop.endTime,
             finished: lop.finished || rop.finished,
             color: lop.color || rop.color,
@@ -188,7 +193,19 @@ function useConsolidados() {
           startTime: local.startTime,
           activeOps: activeOpsMerged,        // ← merge inteligente
           finished: local.finished || rc.finished,
-          lines: localGana ? local.lines : rc.lines,
+          // POR:
+lines: (() => {
+  // Merge línea por línea: "ok" y "error" son definitivos, nunca los pisa "armado"
+  const base = localGana ? local.lines : rc.lines;
+  const otro = localGana ? rc.lines : local.lines;
+  return base.map(bl => {
+    if (bl.estado === "ok" || bl.estado === "error") return bl;
+    const ol = otro.find(l => l.id === bl.id);
+    if (!ol) return bl;
+    if (ol.estado === "ok" || ol.estado === "error") return ol;
+    return (bl.ts || 0) >= (ol.ts || 0) ? bl : ol;
+  });
+})(),
         };
       });
 
@@ -4449,11 +4466,15 @@ function ModArmado({ toast, operarios, cons, setCons }) {
     const now = Date.now();
     const c = cons.find((x) => x.id === consId);
     const op = c?.activeOps.find((o) => o.id === opId);
-    const startTs = Number(op?.startTime || 0);
-    const duracionMin = startTs > 0 ? Math.round((now - startTs) / 60000) : 0;
-    const piqueos =
-      op?.piqueos ||
-      Math.round((c?.piqueos || 0) / Math.max((c?.activeOps || []).length, 1));
+    const startTs = Number(op?.startTime || c?.startTime || 0);
+const duracionMin = startTs > 0 ? Math.round((now - startTs) / 60000) : 0;
+const divOp = op?.divisiones || [];
+const lineasOp = divOp.length > 0
+  ? (c?.lines || []).filter((l) => divOp.includes(l.seccion))
+  : (c?.lines || []);
+  const piqueos = lineasOp.filter(l => l.estado === "armado" && l.operario === op?.nombre).length
+  || lineasOp.filter(l => l.estado === "armado").length
+  || lineasOp.length;
 
     setCons((cs) =>
       cs.map((x) =>
@@ -4478,7 +4499,8 @@ function ModArmado({ toast, operarios, cons, setCons }) {
         fecha: c?.fecha,
         nombre: op.nombre,
         codigo: op.codigo || "",
-        horaInicio: startTs > 0 ? fHora(startTs) : "—",
+        // DESPUÉS:
+horaInicio: startTs > 0 ? fHora(startTs) : fHora(Number(c?.startTime || 0)),
         horaFin: fHora(now),
         startTime: startTs,
         endTime: now,
@@ -4591,7 +4613,24 @@ function ModArmado({ toast, operarios, cons, setCons }) {
                     gap: "12px",
                     opacity: op.finished ? 0.5 : 1,
                   })}
-                  onClick={() => !op.finished && setArmarOpId(op.id)}
+                  onClick={() => {
+                    if (!op.finished) {
+                      // Registrar hora de inicio del operario en este dispositivo
+                      setCons((cs) => cs.map((x) => {
+                        if (x.id !== currentId) return x;
+                        return {
+                          ...x,
+                          activeOps: x.activeOps.map((o) =>
+                            // DESPUÉS:
+o.id === op.id && (!o.startTime || o.startTime === c.startTime)
+                              ? { ...o, startTime: Date.now() }
+                              : o
+                          ),
+                        };
+                      }));
+                      setArmarOpId(op.id);
+                    }
+                  }}
                 >
                   <div style={{
                     width: "36px", height: "36px", borderRadius: "50%",
@@ -4624,7 +4663,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
       ? c.lines.filter((l) => divOp.includes(l.seccion))
       : c.lines;
 
-    const marcadas = lineasOp.filter((l) => l.estado === "ok").length;
+    const marcadas = lineasOp.filter((l) => l.estado === "armado").length;
     const total = lineasOp.length;
     const pct = total > 0 ? Math.round((marcadas / total) * 100) : 0;
     const todasListas = marcadas === total;
@@ -4634,25 +4673,37 @@ function ModArmado({ toast, operarios, cons, setCons }) {
     function marcarLinea(lineId) {
       setCons((cs) => cs.map((x) => {
         if (x.id !== currentId) return x;
+        const line = x.lines.find((l) => l.id === lineId);
+        const nuevoEstado = line?.estado === "armado" ? null : "armado";
         const nuevasLines = x.lines.map((l) =>
           l.id === lineId
-            ? { ...l, estado: l.estado === "ok" ? null : "ok", operario: op.nombre, ts: Date.now() }
+            ? { ...l, estado: nuevoEstado, operario: op.nombre, ts: Date.now() }
             : l
         );
-        // Sincronizar al Sheet
-        const line = x.lines.find((l) => l.id === lineId);
-        const nuevoEstado = line?.estado === "ok" ? null : "ok";
-        if (line && nuevoEstado === "ok") {
+        if (line) {
           api.post("actualizar_linea", {
             consId: String(currentId),
             codigo: line.codigo,
             descripcion: line.descripcion,
-            estado: "ok",
+            estado: nuevoEstado || "pendiente",
             motivo: "",
             operario: op.nombre,
           });
         }
-        return { ...x, lines: nuevasLines };
+        // Contar cuántos armados tiene el operario después del cambio
+const piquesActuales = nuevasLines.filter(
+  (l) => l.estado === "armado" && l.operario === op.nombre
+).length;
+
+return {
+  ...x,
+  lines: nuevasLines,
+  activeOps: x.activeOps.map((o) =>
+    o.id === armarOpId
+      ? { ...o, piqueos: piquesActuales }
+      : o
+  ),
+};
       }));
     }
 
@@ -4721,7 +4772,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
               </div>
 
               {prods.map((p) => {
-                const esOk = p.estado === "ok";
+                const esOk = p.estado === "armado";
                 return (
                   <div
                     key={p.id}
@@ -4756,20 +4807,39 @@ function ModArmado({ toast, operarios, cons, setCons }) {
                       </div>
                       <div style={{ fontSize: "10px", color: C.muted, marginTop: "2px" }}>
                         {p.codigo}
-                        {p.unit === "BU" && p.bu !== "0"
-                          ? ` · ${p.qty} BU · ${p.bu} UN`
-                          : p.unit === "BU"
-                          ? ` · ${p.qty} BU`
-                          : ` · ${p.qty} ${p.unit}`}
+{p.unit === "BU" && p.bu !== "0"
+  ? ` · ${p.qty} BU · ${p.bu} UN`
+  : p.unit === "BU"
+  ? ` · ${p.qty} BU`
+  : ` · ${p.qty} ${p.unit}`}
                       </div>
                     </div>
 
                     {/* Cantidad grande */}
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <div style={{ fontSize: "22px", fontWeight: 900, color: esOk ? C.green : op.color }}>
-                        {p.unit === "BU" ? p.qty : p.qty}
-                      </div>
-                      <div style={{ fontSize: "9px", color: C.muted }}>{p.unit}</div>
+                    {p.unit === "BU" ? (
+  <div style={{ textAlign: "right" }}>
+    <div style={{ fontSize: "26px", fontWeight: 900, color: esOk ? C.green : C.orange, lineHeight: 1 }}>
+      {p.qty}
+    </div>
+    <div style={{ fontSize: "10px", fontWeight: 700, color: esOk ? C.green : C.orange }}>BU</div>
+    {p.bu !== "0" && (
+      <>
+        <div style={{ fontSize: "18px", fontWeight: 700, color: esOk ? C.green : C.text, lineHeight: 1 }}>
+          {p.bu}
+        </div>
+        <div style={{ fontSize: "10px", color: C.muted }}>UN</div>
+      </>
+    )}
+  </div>
+) : (
+  <div style={{ textAlign: "right" }}>
+    <div style={{ fontSize: "26px", fontWeight: 900, color: esOk ? C.green : C.text, lineHeight: 1 }}>
+      {p.qty}
+    </div>
+    <div style={{ fontSize: "10px", color: C.muted }}>{p.unit}</div>
+  </div>
+)}
                     </div>
 
                     {/* Botón check */}
@@ -4808,8 +4878,13 @@ function ModArmado({ toast, operarios, cons, setCons }) {
               padding: "16px",
               opacity: todasListas ? 1 : 0.6,
             })}
-            disabled={!todasListas}
-            onClick={finalizarMiParte}
+disabled={false}
+onClick={() => {
+  if (!todasListas) {
+    if (!window.confirm(`Faltan ${total - marcadas} productos sin marcar. ¿Finalizar igual?`)) return;
+  }
+  finalizarMiParte();
+}}
           >
             {todasListas ? "✅ FINALIZAR MI PARTE" : `⏳ Faltan ${total - marcadas} productos`}
           </button>
@@ -5226,7 +5301,8 @@ function ModArmado({ toast, operarios, cons, setCons }) {
         const ok = c.lines.filter((l) => l.estado === "ok").length;
         const err = c.lines.filter((l) => l.estado === "error").length;
         const tot = c.lines.length;
-        const pct = tot > 0 ? Math.round(((ok + err) / tot) * 100) : 0;
+        const armado = c.lines.filter((l) => l.estado === "armado").length;
+        const pct = tot > 0 ? Math.round(((ok + err + armado) / tot) * 100) : 0;
         const opsListas = c.activeOps.filter((o) => o.finished).length;
         return (
           <div
@@ -5316,21 +5392,6 @@ function ModArmado({ toast, operarios, cons, setCons }) {
                         : "En curso..."}
                     </div>
                   </div>
-                  {!op.finished && !c.finished && (
-                    <button
-                      style={btn({
-                        background: C.green,
-                        color: "#0a0c10",
-                        fontSize: "10px",
-                        fontWeight: 700,
-                        padding: "4px 8px",
-                        borderRadius: "6px",
-                      })}
-                      onClick={() => finalizarOp(c.id, op.id)}
-                    >
-                      ✓ Fin
-                    </button>
-                  )}
                   {op.finished && <span style={{ fontSize: "14px" }}>✅</span>}
                 </div>
               ))}
@@ -5347,13 +5408,10 @@ function ModArmado({ toast, operarios, cons, setCons }) {
               <span style={pill(C.blue)}>{tot} líneas</span>
               {ok > 0 && <span style={pill(C.green)}>✓ {ok} OK</span>}
               {err > 0 && <span style={pill(C.red)}>✗ {err} errores</span>}
-              <span
-                style={pill(
-                  opsListas === c.activeOps.length ? C.green : C.gold
-                )}
-              >
-                {opsListas}/{c.activeOps.length} operarios listos
-              </span>
+              <span style={pill(opsListas === c.activeOps.length ? C.green : C.gold)}>
+  {opsListas}/{c.activeOps.length} operarios listos
+</span>
+{armado > 0 && <span style={pill(C.accent)}>🔨 {armado} armados</span>}
             </div>
             {pct > 0 && (
               <div
@@ -5461,6 +5519,10 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
     : 0;
 
   function markLine(lid, estado, motivo = null) {
+    if (!ctrl && estado) {
+      toast("⚠️ Seleccioná el controlador primero", "error");
+      return;
+    }
     setCons((cs) =>
       cs.map((x) =>
         String(x.id) !== String(currentId)
@@ -6016,20 +6078,22 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
                       </div>
                       <div style={{ fontSize: "10px", color: C.muted }}>
                         {line.codigo} ·{" "}
-                        {line.bu && line.bu !== "0" && line.unit !== "BU" && (
-                          <span
-                            style={{
-                              color: C.muted,
-                              marginRight: "6px",
-                              fontSize: "9px",
-                            }}
-                          >
-                            ({line.bu} BU)
-                          </span>
-                        )}
-                        <strong style={{ color: C.text }}>
-                          {line.qty} {line.unit}
-                        </strong>
+                        {line.unit === "BU" ? (
+  <span>
+    <strong style={{ color: C.orange, fontSize: "15px" }}>
+      {line.qty} BU
+    </strong>
+    {line.bu !== "0" && (
+      <strong style={{ color: C.text, fontSize: "15px" }}>
+        {" · "}{line.bu} UN
+      </strong>
+    )}
+  </span>
+) : (
+  <strong style={{ color: C.text, fontSize: "15px" }}>
+    {line.qty} {line.unit}
+  </strong>
+)}
                         {isErr ? (
                           <span style={{ color: C.red }}>
                             {" "}
