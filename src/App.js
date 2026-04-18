@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import * as XLSX from "xlsx";
+// xlsx via CDN
+const XLSX = window.XLSX;
 
 const APPS_SCRIPT_URL =
   "https://script.google.com/macros/s/AKfycbyFgyn7X_rDZ_qboQwoZatRFttzlvnYhmxWU55xlyQHVsJuKSU2QrTY7ZGx8lvqjOQ/exec";
@@ -4713,6 +4714,50 @@ return {
       setArmarOpId(null);
       setScr("list");
     }
+    
+    function imprimirTicketFinal() {
+      const fecha = new Date().toLocaleDateString("es-AR");
+      const ahora = new Date().toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit" });
+      const win = window.open("", "_blank", "width=420,height=320");
+      if (win) {
+        win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+        <style>
+          * { margin:0; padding:0; box-sizing:border-box; }
+          body { font-family: Arial, sans-serif; padding: 8mm; width: 105mm; }
+          .logo { font-size: 16pt; font-weight: 900; color: #7c3aed; letter-spacing: 2px; }
+          .linea { border-top: 1px dashed #ccc; margin: 5px 0; }
+          .fila { display: flex; justify-content: space-between; font-size: 8pt; padding: 2px 0; }
+          .fila span:first-child { color: #666; }
+          .fila span:last-child { font-weight: 700; }
+          .op { font-size: 16pt; font-weight: 900; color: #7c3aed; margin: 5px 0 1px; }
+          .divs { font-size: 8pt; color: #444; margin-bottom: 4px; }
+          .piq { font-size: 28pt; font-weight: 900; text-align: center; margin: 4px 0; }
+          .piq-label { font-size: 7pt; text-align: center; color: #666; letter-spacing: 1px; text-transform: uppercase; }
+          .firma { border-top: 1px solid #000; margin-top: 8mm; padding-top: 2mm; font-size: 7pt; color: #666; }
+          .hora-fin { font-size: 7pt; color: #666; margin-top: 4px; }
+          @media print { @page { size: A4; margin: 0; } }
+        </style>
+        </head><body>
+          <div class="logo">ROS-ARC</div>
+          <div style="font-size:7pt;color:#666;letter-spacing:2px;">TICKET DE ARMADO</div>
+          <div style="font-size:20pt;font-weight:900;margin:3px 0;">#${c.numero}</div>
+          <div class="linea"></div>
+          <div class="fila"><span>Fecha</span><span>${fecha}</span></div>
+          <div class="fila"><span>Hora fin</span><span>${ahora}</span></div>
+          <div class="fila"><span>Total líneas</span><span>${lineasOp.length}</span></div>
+          <div class="linea"></div>
+          <div class="op">${op.nombre}</div>
+          <div class="divs">${divOp.join(" · ") || "Todas las divisiones"}</div>
+          <div class="piq">${lineasOp.filter(l => l.estado === "armado").length}</div>
+          <div class="piq-label">piqueos marcados</div>
+          <div class="linea"></div>
+          <div class="firma">Firma: ___________________________</div>
+          <div class="hora-fin">Hora fin: ____________</div>
+        </body></html>`);
+        win.document.close();
+        setTimeout(() => { win.print(); }, 300);
+      }
+    }
 
     return (
       <div style={BS}>
@@ -5459,8 +5504,62 @@ onClick={() => {
                   padding: "8px",
                 })}
                 onClick={() => {
-                  setCId(c.id);
-                  setScr("print");
+                  const fecha = new Date().toLocaleDateString("es-AR");
+                  const win = window.open("", "_blank", "width=500,height=600");
+                  if (win) {
+                    const ticketsHTML = c.activeOps.map(op => {
+                      const divs = op.divisiones || [];
+                      const lineasOp = divs.length > 0
+                        ? c.lines.filter(l => divs.includes(l.seccion))
+                        : c.lines;
+                      return `
+                        <div class="ticket">
+                          <div class="logo">ROS-ARC</div>
+                          <div class="subtit">TICKET DE ARMADO</div>
+                          <div class="num">#${c.numero}</div>
+                          <div class="linea"></div>
+                          <div class="fila"><span>Fecha</span><span>${fecha}</span></div>
+                          <div class="fila"><span>Hora inicio</span><span>${c.horaInicio || "—"}</span></div>
+                          <div class="fila"><span>Total líneas</span><span>${lineasOp.length}</span></div>
+                          <div class="linea"></div>
+                          <div class="op" style="color:${op.color}">${op.nombre}</div>
+                          <div class="divs">${divs.join(" · ") || "Todas las divisiones"}</div>
+                          <div class="piq">${lineasOp.length}</div>
+                          <div class="piq-label">PIQUEOS ASIGNADOS</div>
+                          <div class="linea"></div>
+                          <div class="firma">Firma: ___________________________</div>
+                          <div class="hora-fin">Hora fin: ____________</div>
+                        </div>`;
+                    }).join('<div style="page-break-after:always"></div>');
+                
+                    win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+                    <style>
+                      * { margin:0; padding:0; box-sizing:border-box; }
+                      body { font-family: Arial, sans-serif; }
+                      .ticket { padding:8mm; width:105mm; height:148mm; display:inline-block; vertical-align:top; border:1px dashed #ccc; }
+                      .logo { font-size:18pt; font-weight:900; color:#7c3aed; letter-spacing:2px; }
+                      .subtit { font-size:7pt; color:#666; letter-spacing:2px; text-transform:uppercase; margin-bottom:4px; }
+                      .num { font-size:22pt; font-weight:900; margin:3px 0; }
+                      .linea { border-top:1px dashed #ccc; margin:5px 0; }
+                      .fila { display:flex; justify-content:space-between; font-size:8pt; padding:2px 0; }
+                      .fila span:first-child { color:#666; }
+                      .fila span:last-child { font-weight:700; }
+                      .op { font-size:16pt; font-weight:900; margin:5px 0 1px; }
+                      .divs { font-size:8pt; color:#444; margin-bottom:4px; }
+                      .piq { font-size:32pt; font-weight:900; text-align:center; margin:4px 0; color:#333; }
+                      .piq-label { font-size:7pt; text-align:center; color:#666; letter-spacing:1px; text-transform:uppercase; }
+                      .firma { border-top:1px solid #000; margin-top:6mm; padding-top:2mm; font-size:7pt; color:#666; }
+                      .hora-fin { font-size:7pt; color:#666; margin-top:4px; }
+                      @media print { @page { size:A4; margin:10mm; } }
+                    </style>
+                    </head><body>
+                      <div style="display:flex;flex-wrap:wrap;gap:4mm;">
+                        ${ticketsHTML}
+                      </div>
+                      <script>setTimeout(()=>window.print(),300);<\/script>
+                    </body></html>`);
+                    win.document.close();
+                  }
                 }}
               >
                 🖨
@@ -5518,44 +5617,46 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
     ? c.totalTime || (st > 1600000000000 ? Math.max(0, Date.now() - st) : 0)
     : 0;
 
-  function markLine(lid, estado, motivo = null) {
-    if (!ctrl && estado) {
-      toast("⚠️ Seleccioná el controlador primero", "error");
-      return;
+    function markLine(lid, estado, motivo = null) {
+      if (!ctrl && estado) {
+        toast("⚠️ Seleccioná el controlador primero", "error");
+        return;
+      }
+      setCons((cs) =>
+        cs.map((x) =>
+          String(x.id) !== String(currentId)
+            ? x
+            : {
+                ...x,
+                lines: x.lines.map((l) =>
+                  l.id !== lid
+                    ? l
+                    : {
+                        ...l,
+                        estado,
+                        motivo,
+                        operario: l.operario || "—",
+                        controlador: ctrl || "Controlador",
+                        ts: Date.now(),
+                      }
+                ),
+              }
+        )
+      );
+      const c = cons.find((x) => x.id === currentId);
+      const line = c?.lines.find((l) => l.id === lid);
+      if (line && estado) {
+        api.post("actualizar_linea", {
+          consId: String(currentId),
+          codigo: line.codigo,
+          descripcion: line.descripcion,
+          estado,
+          motivo: motivo || "",
+          operario: line.operario || "—",      // ← armador original
+          controlador: ctrl || "Controlador",  // ← controlador separado
+        });
+      }
     }
-    setCons((cs) =>
-      cs.map((x) =>
-        String(x.id) !== String(currentId)
-          ? x
-          : {
-              ...x,
-              lines: x.lines.map((l) =>
-                l.id !== lid
-                  ? l
-                  : {
-                      ...l,
-                      estado,
-                      motivo,
-                      operario: ctrl || "Controlador",
-                      ts: Date.now(),
-                    }
-              ),
-            }
-      )
-    );
-    const c = cons.find((x) => x.id === currentId);
-    const line = c?.lines.find((l) => l.id === lid);
-    if (line && estado) {
-      api.post("actualizar_linea", {
-        consId: String(currentId),
-        codigo: line.codigo,
-        descripcion: line.descripcion,
-        estado,
-        motivo: motivo || "",
-        operario: ctrl || "Controlador",
-      });
-    }
-  }
   function cerrar(sigData) {
     const now = Date.now();
     const c = cons.find((x) => x.id === currentId);
