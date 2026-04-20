@@ -2642,50 +2642,30 @@ function PrintDoc({ cons, firmaData }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════
-// MÓDULO OPERARIOS — ABM completo
-// ═══════════════════════════════════════════════════════════════
 function ModOperarios({ operarios, setOperarios, toast }) {
   const [showForm, sf] = useState(false);
   const [editing, se] = useState(null);
   const [fNombre, sn] = useState("");
   const [fCodigo, sc] = useState("");
-  function openNew() {
-    sn("");
-    sc("");
-    se(null);
-    sf(true);
-  }
-  function openEdit(op) {
-    sn(op.nombre);
-    sc(op.codigo);
-    se(op);
-    sf(true);
-  }
+  const [fEsCtrl, setEsCtrl] = useState(false);
+
+  function openNew() { sn(""); sc(""); se(null); setEsCtrl(false); sf(true); }
+  function openEdit(op) { sn(op.nombre); sc(op.codigo); se(op); setEsCtrl(op.esControlador||false); sf(true); }
 
   function save() {
-    if (!fNombre.trim()) {
-      toast("⚠️ Ingresá el nombre", "error");
-      return;
-    }
+    if (!fNombre.trim()) { toast("⚠️ Ingresá el nombre", "error"); return; }
     if (editing) {
-      setOperarios((ops) =>
-        ops.map((o) =>
-          o.id === editing.id ? { ...o, nombre: fNombre, codigo: fCodigo } : o
-        )
-      );
+      setOperarios((ops) => ops.map((o) =>
+        o.id === editing.id ? { ...o, nombre: fNombre, codigo: fCodigo, esControlador: fEsCtrl } : o
+      ));
       toast("✅ Operario actualizado");
     } else {
       const color = OP_COLORS[operarios.length % OP_COLORS.length];
-      setOperarios((ops) => [
-        ...ops,
-        {
-          id: Date.now(),
-          nombre: fNombre,
-          codigo: fCodigo || `OP-${String(ops.length + 1).padStart(2, "0")}`,
-          color,
-        },
-      ]);
+      setOperarios((ops) => [...ops, {
+        id: Date.now(), nombre: fNombre,
+        codigo: fCodigo || `OP-${String(ops.length+1).padStart(2,"0")}`,
+        color, esControlador: fEsCtrl,
+      }]);
       toast("✅ Operario agregado");
     }
     sf(false);
@@ -2699,142 +2679,61 @@ function ModOperarios({ operarios, setOperarios, toast }) {
 
   return (
     <div style={BS}>
-      <button
-        style={btn({
-          background: `linear-gradient(135deg,${C.accent},#5b21b6)`,
-          color: "#fff",
-          width: "100%",
-          fontSize: "14px",
-          padding: "13px",
-        })}
-        onClick={openNew}
-      >
+      <button style={btn({ background:`linear-gradient(135deg,${C.accent},#5b21b6)`, color:"#fff", width:"100%", fontSize:"14px", padding:"13px" })} onClick={openNew}>
         + Agregar Operario
       </button>
 
       {showForm && (
         <div style={card({ borderColor: C.accent })}>
-          <div style={secTit}>
-            {editing ? "✏️ EDITAR" : "➕ NUEVO"} OPERARIO
-          </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: "9px",
-              marginBottom: "12px",
-            }}
-          >
+          <div style={secTit}>{editing ? "✏️ EDITAR" : "➕ NUEVO"} OPERARIO</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"9px", marginBottom:"12px" }}>
             <div>
               <label style={lbl}>Nombre completo</label>
-              <input
-                style={inp}
-                value={fNombre}
-                onChange={(e) => sn(e.target.value)}
-                placeholder="Juan Pérez"
-                autoFocus
-              />
+              <input style={inp} value={fNombre} onChange={(e) => sn(e.target.value)} placeholder="Juan Pérez" autoFocus />
             </div>
             <div>
               <label style={lbl}>Legajo / Código</label>
-              <input
-                style={inp}
-                value={fCodigo}
-                onChange={(e) => sc(e.target.value)}
-                placeholder="OP-01"
-              />
+              <input style={inp} value={fCodigo} onChange={(e) => sc(e.target.value)} placeholder="OP-01" />
             </div>
           </div>
-          <div style={{ display: "flex", gap: "8px" }}>
-            <button
-              style={btn({
-                background: C.surf2,
-                color: C.muted,
-                border: `1px solid ${C.bord}`,
-                flex: 1,
-              })}
-              onClick={() => sf(false)}
-            >
-              Cancelar
-            </button>
-            <button
-              style={btn({
-                background: C.green,
-                color: "#0a0c10",
-                fontWeight: 700,
-                flex: 2,
-              })}
-              onClick={save}
-            >
-              ✓ {editing ? "Guardar cambios" : "Agregar"}
-            </button>
+          {/* Toggle controlador */}
+          <div
+            style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 12px", background:C.surf2, borderRadius:"8px", marginBottom:"12px", cursor:"pointer", border:`1px solid ${fEsCtrl ? C.blue : C.bord}` }}
+            onClick={() => setEsCtrl(v => !v)}
+          >
+            <div>
+              <div style={{ fontSize:"13px", fontWeight:600, color: fEsCtrl ? C.blue : C.text }}>🔍 Habilitado como controlador</div>
+              <div style={{ fontSize:"10px", color:C.muted }}>Puede acceder al módulo de control</div>
+            </div>
+            <div style={{ width:"44px", height:"24px", borderRadius:"12px", background: fEsCtrl ? C.blue : C.bord, position:"relative", transition:"background .2s", flexShrink:0 }}>
+              <div style={{ position:"absolute", top:"3px", left: fEsCtrl ? "23px" : "3px", width:"18px", height:"18px", borderRadius:"50%", background:"#fff", transition:"left .2s" }} />
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:"8px" }}>
+            <button style={btn({ background:C.surf2, color:C.muted, border:`1px solid ${C.bord}`, flex:1 })} onClick={() => sf(false)}>Cancelar</button>
+            <button style={btn({ background:C.green, color:"#0a0c10", fontWeight:700, flex:2 })} onClick={save}>✓ {editing ? "Guardar cambios" : "Agregar"}</button>
           </div>
         </div>
       )}
 
       {operarios.length === 0 && !showForm && (
-        <div style={{ textAlign: "center", color: C.muted, padding: "40px" }}>
-          Sin operarios. Agregá uno para empezar.
-        </div>
+        <div style={{ textAlign:"center", color:C.muted, padding:"40px" }}>Sin operarios. Agregá uno para empezar.</div>
       )}
 
       {operarios.map((op) => (
-        <div
-          key={op.id}
-          style={{
-            ...card({ padding: "13px 15px" }),
-            display: "flex",
-            alignItems: "center",
-            gap: "12px",
-          }}
-        >
-          <div
-            style={{
-              width: "40px",
-              height: "40px",
-              borderRadius: "50%",
-              background: op.color,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: "16px",
-              fontWeight: 700,
-              color: "#fff",
-              flexShrink: 0,
-            }}
-          >
+        <div key={op.id} style={{ ...card({ padding:"13px 15px" }), display:"flex", alignItems:"center", gap:"12px" }}>
+          <div style={{ width:"40px", height:"40px", borderRadius:"50%", background:op.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:"16px", fontWeight:700, color:"#fff", flexShrink:0 }}>
             {op.nombre.charAt(0).toUpperCase()}
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: "14px" }}>{op.nombre}</div>
-            <div style={{ fontSize: "11px", color: C.muted, marginTop: "2px" }}>
-              {op.codigo}
+          <div style={{ flex:1 }}>
+            <div style={{ fontWeight:600, fontSize:"14px" }}>{op.nombre}</div>
+            <div style={{ fontSize:"11px", color:C.muted, marginTop:"2px", display:"flex", gap:"8px", alignItems:"center" }}>
+              <span>{op.codigo}</span>
+              {op.esControlador && <span style={{ background:`${C.blue}18`, color:C.blue, border:`1px solid ${C.blue}40`, borderRadius:"20px", padding:"1px 7px", fontSize:"9px", fontWeight:700 }}>🔍 CONTROLADOR</span>}
             </div>
           </div>
-          <button
-            style={btn({
-              background: "transparent",
-              color: C.blue,
-              border: `1px solid ${C.bord}`,
-              padding: "6px 10px",
-              fontSize: "12px",
-            })}
-            onClick={() => openEdit(op)}
-          >
-            ✏️
-          </button>
-          <button
-            style={btn({
-              background: "transparent",
-              color: C.red,
-              border: `1px solid ${C.bord}`,
-              padding: "6px 10px",
-              fontSize: "12px",
-            })}
-            onClick={() => del(op.id)}
-          >
-            🗑
-          </button>
+          <button style={btn({ background:"transparent", color:C.blue, border:`1px solid ${C.bord}`, padding:"6px 10px", fontSize:"12px" })} onClick={() => openEdit(op)}>✏️</button>
+          <button style={btn({ background:"transparent", color:C.red, border:`1px solid ${C.bord}`, padding:"6px 10px", fontSize:"12px" })} onClick={() => del(op.id)}>🗑</button>
         </div>
       ))}
     </div>
@@ -4209,7 +4108,7 @@ function ModRecepcion({ toast, operarios }) {
 // ═══════════════════════════════════════════════════════════════
 // MÓDULO ARMADO — Carga XLS + número automático + imprimir
 // ═══════════════════════════════════════════════════════════════
-function ModArmado({ toast, operarios, cons, setCons }) {
+function ModArmado({ toast, operarios, cons, setCons, usuarioActivo }) {
   const [screen, setScr] = useState("list");
   const [currentId, setCId] = useState(null);
   const [fNum, sfn] = useState("");
@@ -4230,7 +4129,7 @@ function ModArmado({ toast, operarios, cons, setCons }) {
 
   const [fileName, setFN] = useState("");
   const [tick, setTick] = useState(0);
-
+  const [fechaFiltro, setFechaFiltro] = useState(todayStr()); // ← AGREGAR
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 5000);
     return () => clearInterval(t);
@@ -5310,39 +5209,66 @@ onClick={() => {
       </div>
     );
 
-  // ── Lista de consolidados ──────────────────────────────────
-  return (
-    <div style={BS}>
+ // ── Lista de consolidados ──────────────────────────────────
+ return (
+  <div style={BS}>
+    <div style={{ display:"flex", gap:"8px", alignItems:"center" }}>
+      <input
+        type="date"
+        style={{ ...inp, flex:1 }}
+        value={fechaFiltro}
+        onChange={e => setFechaFiltro(e.target.value)}
+      />
       <button
-        style={btn({
-          background: `linear-gradient(135deg,${C.accent},#5b21b6)`,
-          color: "#fff",
-          width: "100%",
-          fontSize: "14px",
-          padding: "13px",
-        })}
-        onClick={() => {
-          // FIX: resetear todo a vacío al crear nuevo
-          setXLS({ sections: [], numero: "", fecha: "", prefijo: "" });
-          setFN("");
-          sfn("");
-          sfp("");
-          sff(todayStr());
-          sfh(nowTime());
-          sfo([]);
-          sfc("");
-          setFDivisiones({});
-          setScr("setup");
-        }}
+        style={btn({ background:C.surf2, color:C.muted, border:`1px solid ${C.bord}`, padding:"9px 12px", fontSize:"12px" })}
+        onClick={() => setFechaFiltro("")}
       >
-        + Nuevo Consolidado
+        Todos
       </button>
-      {cons.length === 0 && (
+    </div>
+    <button
+      style={btn({
+        background: `linear-gradient(135deg,${C.accent},#5b21b6)`,
+        color: "#fff",
+        width: "100%",
+        fontSize: "14px",
+        padding: "13px",
+      })}
+      onClick={() => {
+        setXLS({ sections: [], numero: "", fecha: "", prefijo: "" });
+        setFN("");
+        sfn("");
+        sfp("");
+        sff(todayStr());
+        sfh(nowTime());
+        sfo([]);
+        sfc("");
+        setFDivisiones({});
+        setScr("setup");
+      }}
+    >
+      + Nuevo Consolidado
+    </button>
+    {cons.length === 0 && (
         <div style={{ textAlign: "center", color: C.muted, padding: "40px" }}>
           Sin consolidados. Cargá el XLS y creá uno.
         </div>
       )}
-      {[...cons].reverse().map((c) => {
+      {[...cons].reverse()
+.filter(c => {
+  // Filtro fecha
+  if (fechaFiltro) {
+    const fechaId = new Date(Number(c.id)).toISOString().split("T")[0];
+    if (fechaId !== fechaFiltro) return false;
+  }
+  // Filtro por usuario activo — solo muestra consolidados donde está asignado
+  if (usuarioActivo) {
+    return c.activeOps.some(op => op.nombre === usuarioActivo.nombre);
+  }
+  return true;
+})
+  
+  .map((c) => {
         const ok = c.lines.filter((l) => l.estado === "ok").length;
         const err = c.lines.filter((l) => l.estado === "error").length;
         const tot = c.lines.length;
@@ -6722,215 +6648,203 @@ function ModMetricas({ toast, cons, prods }) {
 // APP PRINCIPAL
 // ═══════════════════════════════════════════════════════════════
 export default function App() {
-  const [tab, setTab] = useState("armado");
+  const [tab, setTab] = useState(null); // null = pantalla inicio
+  const [usuarioActivo, setUsuarioActivo] = useState(null);
   const [toast, setT] = useState({ msg: "", type: "ok" });
   const [operariosRaw, setOperariosRaw] = useDB("rosarc_ops_v6", []);
   const [prods] = useDB("rosarc_recepcion_v2", null);
   const { cons, setCons, sincronizar, syncOk, lastSync } = useConsolidados();
 
-  const setOperarios = useCallback(
-    (fn) => {
-      setOperariosRaw((prev) => {
-        const next = typeof fn === "function" ? fn(prev) : fn;
-        fetch(APPS_SCRIPT_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tipo: "guardar_operarios", data: next }),
-          mode: "no-cors",
-        }).catch(() => {});
-        return next;
-      });
-    },
-    [setOperariosRaw]
-  );
+  const setOperarios = useCallback((fn) => {
+    setOperariosRaw((prev) => {
+      const next = typeof fn === "function" ? fn(prev) : fn;
+      fetch(APPS_SCRIPT_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ tipo:"guardar_operarios", data:next }), mode:"no-cors" }).catch(()=>{});
+      return next;
+    });
+  }, [setOperariosRaw]);
 
   const operarios = operariosRaw;
 
   useEffect(() => {
     fetch(`${APPS_SCRIPT_URL}?accion=leer_operarios`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.status === "ok" && d.operarios && d.operarios.length > 0)
-          setOperariosRaw(d.operarios);
-      })
-      .catch(() => {});
+      .then(r=>r.json())
+      .then(d => { if (d.status==="ok" && d.operarios && d.operarios.length>0) setOperariosRaw(d.operarios); })
+      .catch(()=>{});
   }, []);
 
-  function showToast(msg, type = "ok") {
+  function showToast(msg, type="ok") {
     setT({ msg, type });
-    setTimeout(() => setT({ msg: "", type: "ok" }), 3500);
+    setTimeout(() => setT({ msg:"", type:"ok" }), 3500);
   }
-
-  const tabs = [
-    { id: "armado", icon: "🖨", label: "Armado" },
-    { id: "control", icon: "🔍", label: "Control" },
-    { id: "recepcion", icon: "📦", label: "Recepción" },
-    { id: "operarios", icon: "👷", label: "Operarios" },
-    { id: "metricas", icon: "📊", label: "Métricas" },
-  ];
 
   const sinURL = APPS_SCRIPT_URL.includes("TU_URL_AQUI");
 
+  // ── PANTALLA SELECTOR DE OPERARIO (para Armado) ──────────
+  if (tab === "armado" && !usuarioActivo) {
+    return (
+      <div style={{ background:C.bg, minHeight:"100vh", color:C.text, fontFamily:"system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
+        <div style={{ background:C.surf, padding:"14px 16px", borderBottom:`1px solid ${C.bord}`, display:"flex", alignItems:"center", gap:"10px" }}>
+          <button style={btn({ background:"transparent", color:C.muted, border:`1px solid ${C.bord}`, padding:"6px 12px", fontSize:"12px" })} onClick={() => setTab(null)}>← Volver</button>
+          <div style={{ fontSize:"16px", fontWeight:700 }}>📱 Armado · ¿Quién sos?</div>
+        </div>
+        <div style={{ ...BS, justifyContent:"center" }}>
+          <div style={card({ borderColor:C.accent })}>
+            <div style={secTit}>👷 SELECCIONÁ TU NOMBRE</div>
+            <p style={{ fontSize:"12px", color:C.muted, marginBottom:"16px" }}>Vas a ver solo los consolidados asignados a vos.</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+              {operarios.filter(op => !op.esControlador).map(op => (
+                <button key={op.id} style={btn({ background:`${op.color}18`, color:op.color, border:`2px solid ${op.color}`, fontSize:"15px", padding:"14px", justifyContent:"flex-start", gap:"12px" })}
+                  onClick={() => { setUsuarioActivo(op); }}>
+                  <div style={{ width:"36px", height:"36px", borderRadius:"50%", background:op.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:"16px", fontWeight:700, color:"#fff", flexShrink:0 }}>
+                    {op.nombre.charAt(0)}
+                  </div>
+                  <span style={{ fontWeight:700 }}>{op.nombre}</span>
+                </button>
+              ))}
+              {operarios.filter(op => !op.esControlador).length === 0 && (
+                <div style={{ color:C.muted, fontSize:"12px", textAlign:"center", padding:"20px" }}>No hay operarios de armado configurados.</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PANTALLA SELECTOR DE CONTROLADOR ────────────────────
+  if (tab === "control" && !usuarioActivo) {
+    const controladores = operarios.filter(op => op.esControlador);
+    return (
+      <div style={{ background:C.bg, minHeight:"100vh", color:C.text, fontFamily:"system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
+        <div style={{ background:C.surf, padding:"14px 16px", borderBottom:`1px solid ${C.bord}`, display:"flex", alignItems:"center", gap:"10px" }}>
+          <button style={btn({ background:"transparent", color:C.muted, border:`1px solid ${C.bord}`, padding:"6px 12px", fontSize:"12px" })} onClick={() => setTab(null)}>← Volver</button>
+          <div style={{ fontSize:"16px", fontWeight:700 }}>🔍 Control · ¿Quién sos?</div>
+        </div>
+        <div style={{ ...BS, justifyContent:"center" }}>
+          <div style={card({ borderColor:C.blue })}>
+            <div style={secTit}>🔍 SELECCIONÁ TU NOMBRE</div>
+            <p style={{ fontSize:"12px", color:C.muted, marginBottom:"16px" }}>Solo controladores habilitados pueden acceder.</p>
+            <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
+              {controladores.map(op => (
+                <button key={op.id} style={btn({ background:`${op.color}18`, color:op.color, border:`2px solid ${op.color}`, fontSize:"15px", padding:"14px", justifyContent:"flex-start", gap:"12px" })}
+                  onClick={() => setUsuarioActivo(op)}>
+                  <div style={{ width:"36px", height:"36px", borderRadius:"50%", background:op.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:"16px", fontWeight:700, color:"#fff", flexShrink:0 }}>
+                    {op.nombre.charAt(0)}
+                  </div>
+                  <span style={{ fontWeight:700 }}>{op.nombre}</span>
+                </button>
+              ))}
+              {controladores.length === 0 && (
+                <div style={{ color:C.muted, fontSize:"12px", textAlign:"center", padding:"20px" }}>
+                  No hay controladores configurados. Habilitá operarios como controladores en el módulo Operarios.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── PANTALLA INICIO ──────────────────────────────────────
+  if (!tab) {
+    const modulos = [
+      { id:"armado",    icon:"📱", label:"Armado",     color:C.accent,  desc:"Pickear consolidados" },
+      { id:"control",   icon:"🔍", label:"Control",    color:C.blue,    desc:"Verificar pedidos" },
+      { id:"recepcion", icon:"📦", label:"Recepción",  color:C.green,   desc:"Recibir mercadería" },
+      { id:"stock",     icon:"🏭", label:"Stock",      color:C.orange,  desc:"Próximamente", disabled:true },
+      { id:"operarios", icon:"👷", label:"Operarios",  color:C.gold,    desc:"Gestionar equipo" },
+      { id:"metricas",  icon:"📊", label:"Métricas",   color:C.red,     desc:"Ver rendimiento" },
+    ];
+    return (
+      <div style={{ background:C.bg, minHeight:"100vh", color:C.text, fontFamily:"system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
+        <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}} *{box-sizing:border-box;}`}</style>
+        {toast.msg && (
+          <div style={{ position:"fixed", bottom:"18px", right:"18px", background:toast.type==="error"?C.red:C.surf2, border:`1px solid ${C.bord}`, borderRadius:"10px", padding:"11px 16px", fontSize:"13px", zIndex:9999, maxWidth:"300px" }}>
+            {toast.msg}
+          </div>
+        )}
+        {/* Header */}
+        <div style={{ background:C.surf, borderBottom:`1px solid ${C.bord}`, padding:"16px 20px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div>
+            <div style={{ fontSize:"24px", fontWeight:900, letterSpacing:"3px", background:`linear-gradient(135deg,${C.blue},${C.accent})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>ROS-ARC</div>
+            <div style={{ fontSize:"11px", color:C.muted, marginTop:"2px" }}>Sistema de gestión de depósito</div>
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:"6px" }} onClick={sincronizar} title="Sincronizar">
+            <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:sinURL?C.orange:syncOk?C.green:C.muted, animation:!syncOk&&!sinURL?"pulse 1.5s infinite":undefined, cursor:"pointer" }} />
+            <span style={{ fontSize:"10px", color:C.muted }}>{syncOk ? lastSync : "Conectando..."}</span>
+          </div>
+        </div>
+
+        {/* Grid de módulos */}
+        <div style={{ flex:1, padding:"20px", display:"flex", flexDirection:"column", justifyContent:"center", maxWidth:"500px", width:"100%", margin:"0 auto" }}>
+          <div style={{ fontSize:"12px", color:C.muted, letterSpacing:"2px", textTransform:"uppercase", marginBottom:"16px", textAlign:"center" }}>¿Qué vas a hacer hoy?</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px" }}>
+            {modulos.map(m => (
+              <button
+                key={m.id}
+                disabled={m.disabled}
+                style={{
+                  background: m.disabled ? C.surf2 : `${m.color}12`,
+                  border: `2px solid ${m.disabled ? C.bord : m.color}`,
+                  borderRadius:"14px",
+                  padding:"20px 16px",
+                  cursor: m.disabled ? "not-allowed" : "pointer",
+                  opacity: m.disabled ? 0.4 : 1,
+                  display:"flex", flexDirection:"column", alignItems:"center", gap:"8px",
+                  transition:"transform .1s",
+                }}
+                onClick={() => { if (!m.disabled) { setUsuarioActivo(null); setTab(m.id); } }}
+                onMouseDown={e => { if (!m.disabled) e.currentTarget.style.transform="scale(.97)"; }}
+                onMouseUp={e => { e.currentTarget.style.transform="scale(1)"; }}
+              >
+                <div style={{ fontSize:"32px" }}>{m.icon}</div>
+                <div style={{ fontSize:"16px", fontWeight:700, color: m.disabled ? C.muted : m.color }}>{m.label}</div>
+                <div style={{ fontSize:"10px", color:C.muted, textAlign:"center" }}>{m.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── MÓDULOS CON NAVBAR ───────────────────────────────────
   return (
-    <div
-      style={{
-        background: C.bg,
-        minHeight: "100vh",
-        color: C.text,
-        fontFamily: "system-ui,sans-serif",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
-      <style>{`@keyframes shimmer{0%{background-position:-200% center}100%{background-position:200% center}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}} *{box-sizing:border-box;} @media print{.no-print{display:none!important}}@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}`}</style>
+    <div style={{ background:C.bg, minHeight:"100vh", color:C.text, fontFamily:"system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
+      <style>{`@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}} *{box-sizing:border-box;} @media print{.no-print{display:none!important}} @keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}`}</style>
       {toast.msg && (
-        <div
-          style={{
-            position: "fixed",
-            bottom: "18px",
-            right: "18px",
-            background: toast.type === "error" ? C.red : C.surf2,
-            border: `1px solid ${C.bord}`,
-            borderRadius: "10px",
-            padding: "11px 16px",
-            fontSize: "13px",
-            zIndex: 9999,
-            boxShadow: "0 8px 24px rgba(0,0,0,.5)",
-            maxWidth: "300px",
-          }}
-        >
+        <div style={{ position:"fixed", bottom:"18px", right:"18px", background:toast.type==="error"?C.red:C.surf2, border:`1px solid ${C.bord}`, borderRadius:"10px", padding:"11px 16px", fontSize:"13px", zIndex:9999, boxShadow:"0 8px 24px rgba(0,0,0,.5)", maxWidth:"300px" }}>
           {toast.msg}
         </div>
       )}
-      <div
-        className="no-print"
-        style={{
-          background: C.surf,
-          borderBottom: `1px solid ${C.bord}`,
-          padding: "0 12px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          height: "52px",
-          position: "sticky",
-          top: 0,
-          zIndex: 100,
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <div
-            style={{
-              fontSize: "18px",
-              fontWeight: 900,
-              letterSpacing: "3px",
-              background: `linear-gradient(135deg,${C.blue},${C.accent})`,
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-              flexShrink: 0,
-            }}
-          >
-            ROS-ARC
-          </div>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "4px",
-              cursor: "pointer",
-            }}
-            onClick={sincronizar}
-            title="Toca para sincronizar"
-          >
-            <div
-              style={{
-                width: "7px",
-                height: "7px",
-                borderRadius: "50%",
-                background: sinURL ? C.orange : syncOk ? C.green : C.muted,
-                animation:
-                  !syncOk && !sinURL ? "pulse 1.5s infinite" : undefined,
-              }}
-            />
-          </div>
+      <div className="no-print" style={{ background:C.surf, borderBottom:`1px solid ${C.bord}`, padding:"0 12px", display:"flex", alignItems:"center", justifyContent:"space-between", height:"52px", position:"sticky", top:0, zIndex:100, flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:"8px" }}>
+          <button style={{ background:"transparent", border:"none", cursor:"pointer", color:C.muted, fontSize:"20px", padding:"4px 6px" }} onClick={() => { setTab(null); setUsuarioActivo(null); }}>←</button>
+          <div style={{ fontSize:"16px", fontWeight:900, letterSpacing:"3px", background:`linear-gradient(135deg,${C.blue},${C.accent})`, WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent" }}>ROS-ARC</div>
+          {usuarioActivo && (
+            <div style={{ display:"flex", alignItems:"center", gap:"6px", background:C.surf2, borderRadius:"20px", padding:"3px 10px 3px 4px" }}>
+              <div style={{ width:"22px", height:"22px", borderRadius:"50%", background:usuarioActivo.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:"10px", fontWeight:700, color:"#fff" }}>{usuarioActivo.nombre.charAt(0)}</div>
+              <span style={{ fontSize:"11px", fontWeight:600, color:C.text }}>{usuarioActivo.nombre}</span>
+            </div>
+          )}
         </div>
-        <div
-          style={{
-            display: "flex",
-            gap: "2px",
-            background: C.surf2,
-            borderRadius: "8px",
-            padding: "3px",
-            overflowX: "auto",
-          }}
-        >
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              style={{
-                ...btn({
-                  fontSize: "11px",
-                  padding: "5px 10px",
-                  borderRadius: "6px",
-                  background: tab === t.id ? C.accent : "transparent",
-                  color: tab === t.id ? "#fff" : C.muted,
-                  whiteSpace: "nowrap",
-                }),
-                border: "none",
-              }}
-              onClick={() => setTab(t.id)}
-            >
-              {t.icon} {t.label}
-            </button>
-          ))}
+        <div style={{ display:"flex", alignItems:"center", gap:"4px", cursor:"pointer" }} onClick={sincronizar}>
+          <div style={{ width:"7px", height:"7px", borderRadius:"50%", background:sinURL?C.orange:syncOk?C.green:C.muted, animation:!syncOk&&!sinURL?"pulse 1.5s infinite":undefined }} />
         </div>
       </div>
+
       {sinURL && (
-        <div
-          style={{
-            background: "rgba(255,140,66,.1)",
-            borderBottom: `1px solid ${C.orange}40`,
-            padding: "7px 14px",
-            fontSize: "11px",
-            color: C.orange,
-            display: "flex",
-            gap: "6px",
-          }}
-        >
-          ⚠️ Modo local — configurá tu URL de Apps Script en línea 3 para
-          sincronizar entre dispositivos.
+        <div style={{ background:"rgba(255,140,66,.1)", borderBottom:`1px solid ${C.orange}40`, padding:"7px 14px", fontSize:"11px", color:C.orange }}>
+          ⚠️ Modo local — configurá tu URL de Apps Script para sincronizar.
         </div>
       )}
-      {tab === "armado" && (
-        <ModArmado
-          toast={showToast}
-          operarios={operarios}
-          cons={cons}
-          setCons={setCons}
-        />
-      )}
-      {tab === "control" && (
-        <ModControl
-          toast={showToast}
-          operarios={operarios}
-          cons={cons}
-          setCons={setCons}
-          sincronizar={sincronizar}
-        />
-      )}
-      {tab === "recepcion" && (
-        <ModRecepcion toast={showToast} operarios={operarios} />
-      )}
-      {tab === "operarios" && (
-        <ModOperarios
-          operarios={operarios}
-          setOperarios={setOperarios}
-          toast={showToast}
-        />
-      )}
-      {tab === "metricas" && (
-        <ModMetricas toast={showToast} cons={cons} prods={prods} />
-      )}
+
+      {tab === "armado" && <ModArmado toast={showToast} operarios={operarios} cons={cons} setCons={setCons} usuarioActivo={usuarioActivo} />}
+      {tab === "control" && <ModControl toast={showToast} operarios={operarios} cons={cons} setCons={setCons} sincronizar={sincronizar} usuarioActivo={usuarioActivo} />}
+      {tab === "recepcion" && <ModRecepcion toast={showToast} operarios={operarios} />}
+      {tab === "operarios" && <ModOperarios operarios={operarios} setOperarios={setOperarios} toast={showToast} />}
+      {tab === "metricas" && <ModMetricas toast={showToast} cons={cons} prods={prods} />}
     </div>
   );
 }
