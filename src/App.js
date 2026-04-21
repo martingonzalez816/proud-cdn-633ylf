@@ -2740,123 +2740,21 @@ function ModOperarios({ operarios, setOperarios, toast }) {
   );
 }
 
-// ─── PARSER CSV RECEPCIÓN ─────────────────────────────────────
-function parseDespachoCSV(text) {
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.split(",").map((c) => c.trim()));
-
-  const info = {
-    nroCarga: "",
-    fecha: "",
-    chofer: "",
-    pallets: "",
-    empresa: "ARCOR",
-  };
-  const productos = [];
-  let empresaActual = "";
-  let facturaActual = "";
-
-  for (let i = 0; i < lines.length; i++) {
-    const row = lines[i];
-    if (!row || !row[0]) continue;
-
-    // Header info
-    if (row[0].includes("Nro. de Carga:")) {
-      info.nroCarga = row[1] || "";
-      const fechaRaw = row[4] || "";
-      if (fechaRaw.includes("/")) {
-        const p = fechaRaw.split("/");
-        info.fecha = `20${p[2]}-${p[1].padStart(2, "0")}-${p[0].padStart(
-          2,
-          "0"
-        )}`;
-      }
-    }
-    if (row[0].includes("Chofer:")) info.chofer = row[1] || "";
-    if (row[0].includes("Cantidad de Pallets:")) info.pallets = row[1] || "";
-    if (row[0] === "Empresa") empresaActual = row[1] || "";
-    if (row[0].includes("Nro. de Factura")) facturaActual = row[1] || "";
-
-    // Productos: EAN en col0 (numérico largo) o col0 vacío con col1 numérico
-    const ean = row[0];
-    const codigo = row[1];
-    const desc = row[2];
-    const unidad = row[3];
-    const cant = row[4];
-
-    const tieneProducto =
-      desc &&
-      cant &&
-      /^\d+$/.test(cant) &&
-      (/^\d{8,}$/.test(ean) || (ean === "" && /^\d+$/.test(codigo)));
-
-    if (
-      tieneProducto &&
-      desc !== "Total de bultos para esta empresa" &&
-      desc !== "Total General"
-    ) {
-      productos.push({
-        id: `${codigo}-${i}`,
-        ean: ean || "",
-        codigo: codigo || "",
-        descripcion: desc || "",
-        unidad: unidad || "BULTOS",
-        cantEsperada: parseInt(cant) || 0,
-        cantReal: null, // null = no verificado
-        empresa: empresaActual,
-        factura: facturaActual,
-        estado: "pendiente", // pendiente | ok | diferencia
-        fotoVerificada: false,
-        vencimiento: "",
-      });
-    }
-  }
-
-  return { info, productos };
-}
-// ═══════════════════════════════════════════════════════════════
-// MÓDULO RECEPCIÓN v3 — con historial, filtro 3 días, eliminar y sync fix
-// REEMPLAZAR desde "function ModRecepcion" hasta el cierre de la función (línea ~3554)
-// ═══════════════════════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════════════════════
-// MÓDULO RECEPCIÓN v4.1
-// Flujo: CSV → lista completa → 📷 foto → IA detecta
-//   · Matchea CSV → guarda automático (código+vencimiento), pide cantidad
-//   · No matchea → panel para cargar como producto extra
-// Sync: polling 5s igual que consolidados, trae datos del Sheet
-//
-// REEMPLAZAR desde "function useRecepcion" hasta el "}" de cierre de ModRecepcion
-// ═══════════════════════════════════════════════════════════════
-
-// ── Hook de sync para recepción (igual patrón que useConsolidados) ──
 function useRecepcion() {
   const [despacho, setDespachoState] = useState(() => {
-    try {
-      const s = localStorage.getItem("rosarc_recepcion_v4");
-      return s ? JSON.parse(s) : null;
-    } catch {
-      return null;
-    }
+    try { const s = localStorage.getItem("rosarc_recepcion_v5"); return s ? JSON.parse(s) : null; } catch { return null; }
   });
   const [historial, setHistorialState] = useState(() => {
-    try {
-      const s = localStorage.getItem("rosarc_recepciones_v3");
-      return s ? JSON.parse(s) : [];
-    } catch {
-      return [];
-    }
+    try { const s = localStorage.getItem("rosarc_recepciones_v4"); return s ? JSON.parse(s) : []; } catch { return []; }
   });
+  const [maestro, setMaestro] = useState([]);
   const [syncOk, setSyncOk] = useState(false);
   const [lastSync, setLastSync] = useState("");
 
   const guardarDespacho = useCallback((fn) => {
     setDespachoState((prev) => {
       const next = typeof fn === "function" ? fn(prev) : fn;
-      try {
-        localStorage.setItem("rosarc_recepcion_v4", JSON.stringify(next));
-      } catch {}
+      try { localStorage.setItem("rosarc_recepcion_v5", JSON.stringify(next)); } catch {}
       return next;
     });
   }, []);
@@ -2864,125 +2762,218 @@ function useRecepcion() {
   const guardarHistorial = useCallback((fn) => {
     setHistorialState((prev) => {
       const next = typeof fn === "function" ? fn(prev) : fn;
-      try {
-        localStorage.setItem("rosarc_recepciones_v3", JSON.stringify(next));
-      } catch {}
+      try { localStorage.setItem("rosarc_recepciones_v4", JSON.stringify(next)); } catch {}
       return next;
     });
   }, []);
 
-  // Sync: trae el despacho activo del Sheet cada 5s
   const sincronizar = useCallback(async () => {
     try {
-      const r = await fetch(`${APPS_SCRIPT_URL}?accion=leer_recepcion`);
-      const d = await r.json();
-      if (d.status === "ok" && d.despacho) {
+      const [rRec, rMaestro] = await Promise.all([
+        fetch(`${APPS_SCRIPT_URL}?accion=leer_recepcion`).then(r=>r.json()),
+        fetch(`${APPS_SCRIPT_URL}?accion=leer_maestro`).then(r=>r.json()),
+      ]);
+      if (rMaestro.status === 'ok') setMaestro(rMaestro.articulos || []);
+      if (rRec.status === "ok" && rRec.despacho) {
         setDespachoState((prev) => {
-          const remoto = d.despacho;
-          if (!prev) {
-            localStorage.setItem("rosarc_recepcion_v4", JSON.stringify(remoto));
+          const remoto = rRec.despacho;
+          if (!prev || prev?.info?.nroCarga !== remoto?.info?.nroCarga) {
+            localStorage.setItem("rosarc_recepcion_v5", JSON.stringify(remoto));
             return remoto;
           }
-          const mismasCarga = prev?.info?.nroCarga === remoto?.info?.nroCarga;
-          if (!mismasCarga) {
-            // Carga diferente: tomar remoto
-            localStorage.setItem("rosarc_recepcion_v4", JSON.stringify(remoto));
-            return remoto;
-          }
-          // Misma carga: merge producto a producto por _ts
           const prodsMerged = (remoto.productos || []).map((rp) => {
-            const lp = (prev.productos || []).find(
-              (p) => p.id === rp.id || p.codigo === rp.codigo
-            );
+            const lp = (prev.productos || []).find(p => p.id === rp.id || p.codigo === rp.codigo);
             if (!lp) return rp;
-            if (lp.cantReal === null && rp.cantReal !== null) return rp;
-            if (lp.cantReal !== null && rp.cantReal === null) return lp;
             return (lp._ts || 0) >= (rp._ts || 0) ? lp : rp;
           });
-          // Agregar productos extra locales (no estaban en CSV original)
-          const extras = (prev.productos || []).filter(
-            (p) => p.esExtra && !prodsMerged.find((m) => m.id === p.id)
-          );
+          const extras = (prev.productos || []).filter(p => p.esExtra && !prodsMerged.find(m => m.id === p.id));
           const merged = { ...prev, productos: [...prodsMerged, ...extras] };
-          localStorage.setItem("rosarc_recepcion_v4", JSON.stringify(merged));
+          localStorage.setItem("rosarc_recepcion_v5", JSON.stringify(merged));
           return merged;
         });
         setSyncOk(true);
-        setLastSync(
-          new Date().toLocaleTimeString("es-AR", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })
-        );
+        setLastSync(new Date().toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit" }));
       }
     } catch {}
   }, []);
 
-  useEffect(() => {
-    sincronizar();
-  }, []);
-  useEffect(() => {
-    const t = setInterval(sincronizar, 5000);
-    return () => clearInterval(t);
-  }, [sincronizar]);
+  useEffect(() => { sincronizar(); }, []);
+  useEffect(() => { const t = setInterval(sincronizar, 10000); return () => clearInterval(t); }, [sincronizar]);
 
-  return {
-    despacho,
-    guardarDespacho,
-    historial,
-    guardarHistorial,
-    sincronizar,
-    syncOk,
-    lastSync,
-  };
+  return { despacho, guardarDespacho, historial, guardarHistorial, sincronizar, syncOk, lastSync, maestro };
 }
 
-// ── Componente principal ────────────────────────────────────────
+function parseDespachoCSV(text) {
+  const lines = text.split(/\r?\n/).map(l => l.split(",").map(c => c.trim()));
+  const info = { nroCarga:"", fecha:"", chofer:"", pallets:"" };
+  const productosMap = {};
+  let empresaActual = "";
+  let facturaActual = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const row = lines[i];
+    if (!row || !row[0]) continue;
+    if (row[0].includes("Nro. de Carga:")) {
+      info.nroCarga = row[1] || "";
+      const fd = row[4] || "";
+      if (fd.includes("/")) {
+        const p = fd.split("/");
+        const anio = p[2].length === 2 ? "20"+p[2] : p[2];
+        info.fecha = `${anio}-${p[1].padStart(2,"0")}-${p[0].padStart(2,"0")}`;
+      }
+    }
+    if (row[0].includes("Chofer:")) info.chofer = row[1] || "";
+    if (row[0].includes("Cantidad de Pallets:")) info.pallets = row[1] || "";
+    if (row[0] === "Empresa") empresaActual = row[1] || "";
+    if (row[0].includes("Nro. de Factura") && row[1] && !row[1].includes("Nro")) facturaActual = row[1] || "";
+
+    const ean = row[0] || "";
+    const codigo = row[1] || "";
+    const desc = row[2] || "";
+    const unidad = row[3] || "";
+    const cantStr = row[4] || "";
+    const cant = parseInt(cantStr) || 0;
+
+    const esProducto = desc && cant > 0
+      && desc !== "Total de bultos para esta empresa"
+      && desc !== "Total General"
+      && !desc.includes("Gracias por su Compra")
+      && /^\d+$/.test(cantStr)
+      && ((/^\d{7,}$/.test(ean)) || (/^\d+$/.test(codigo)));
+
+    if (esProducto) {
+      const key = codigo || ean;
+      if (productosMap[key]) {
+        productosMap[key].cantEsperada += cant;
+        if (facturaActual && !productosMap[key].facturas.includes(facturaActual))
+          productosMap[key].facturas.push(facturaActual);
+      } else {
+        productosMap[key] = {
+          id: `${codigo}-${ean||"x"}`,
+          ean: ean || "",
+          codigo: codigo,
+          descripcion: desc,
+          unidad: unidad || "BULTOS",
+          cantEsperada: cant,
+          cantReal: null,
+          empresa: empresaActual,
+          facturas: facturaActual ? [facturaActual] : [],
+          estado: "pendiente",
+          vencimiento: "",
+          escaneado: false,
+          _ts: 0,
+        };
+      }
+    }
+  }
+  return { info, productos: Object.values(productosMap) };
+}
+
 function ModRecepcion({ toast, operarios }) {
-  const {
-    despacho,
-    guardarDespacho,
-    historial,
-    guardarHistorial,
-    sincronizar,
-    syncOk,
-    lastSync,
-  } = useRecepcion();
+  const { despacho, guardarDespacho, historial, guardarHistorial, sincronizar, syncOk, lastSync, maestro } = useRecepcion();
   const [tab, setTab] = useState("carga");
   const [operario, setOperario] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [loadingMsg, setLoadingMsg] = useState("");
-  // focusIdx: índice del producto recién detectado por foto, para hacer scroll/highlight
-  const [focusIdx, setFocusIdx] = useState(null);
-  const focusRef = useRef(null);
+  const [scanActivo, setScanActivo] = useState(false);
+  const [scanBuffer, setScanBuffer] = useState("");
+  const [ultimoScan, setUltimoScan] = useState(null);
+  const [modalProd, setModalProd] = useState(null); // { idx, prod }
+  const bufferRef = useRef("");
+  const timerRef = useRef(null);
 
-  // Scroll al producto detectado
+  // ── Escáner Bluetooth ────────────────────────────────────
   useEffect(() => {
-    if (focusIdx !== null && focusRef.current) {
-      focusRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-      focusRef.current.querySelector("input[type='number']")?.focus();
+    if (tab !== "control") return;
+    function onKey(e) {
+      if (!scanActivo) return;
+      if (e.key === "Enter") {
+        const ean = bufferRef.current.trim();
+        bufferRef.current = "";
+        setScanBuffer("");
+        clearTimeout(timerRef.current);
+        if (ean.length >= 7) procesarEAN(ean);
+      } else if (e.key.length === 1) {
+        bufferRef.current += e.key;
+        setScanBuffer(bufferRef.current);
+        clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+          const ean = bufferRef.current.trim();
+          bufferRef.current = "";
+          setScanBuffer("");
+          if (ean.length >= 7) procesarEAN(ean);
+        }, 200);
+      }
     }
-  }, [focusIdx]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tab, scanActivo, despacho, maestro]);
 
-  // Panel de confirmación — solo para productos NO encontrados en CSV
-  const [confirmPanel, setConfirmPanel] = useState(null);
-  // {
-  //   iaResult: { codigo, ean, descripcion, vencimiento },
-  //   matchIdx: número | null,   (índice en productos si matcheó)
-  //   cantReal: "",
-  //   esExtra: false
-  // }
+  function buscarEnMaestro(ean) {
+    // Buscar en maestro por cualquier EAN (bulto, display, unidad)
+    return maestro.find(a =>
+      a.ean_bulto === ean || a.ean_display === ean || a.ean_unidad === ean
+    );
+  }
 
-  // Historial: últimos 3 días, no ocultos
-  const hace3dias = new Date();
-  hace3dias.setDate(hace3dias.getDate() - 3);
-  hace3dias.setHours(0, 0, 0, 0);
-  const historialVisible = historial.filter((h) => {
-    if (h.oculta) return false;
-    return new Date(h.finalizadaEn || h.cargadoEn || 0) >= hace3dias;
-  });
+  function procesarEAN(ean) {
+    if (!despacho) return;
+    const prods = despacho.productos || [];
 
-  // ── Cargar CSV ──────────────────────────────────────────────
+    // 1. Buscar directo por EAN en el CSV
+    let idx = prods.findIndex(p => p.ean === ean);
+
+    // 2. Si no matchea, buscar en maestro y cruzar por código
+    if (idx === -1) {
+      const artMaestro = buscarEnMaestro(ean);
+      if (artMaestro) {
+        idx = prods.findIndex(p => p.codigo === artMaestro.codigo);
+      }
+    }
+
+    // 3. Fallback: buscar si el EAN contiene el código
+    if (idx === -1) idx = prods.findIndex(p => p.codigo && ean.includes(p.codigo));
+
+    if (idx !== -1) {
+      setModalProd({ idx, prod: prods[idx] });
+      setUltimoScan({ prod: prods[idx], idx });
+      toast(`📦 ${prods[idx].descripcion.slice(0,35)}...`);
+    } else {
+      toast(`⚠️ EAN ${ean} no encontrado`, "error");
+      setUltimoScan({ prod: null, ean });
+    }
+  }
+
+  function confirmarModal(cantReal, vencimiento) {
+    if (!despacho || modalProd === null) return;
+    const prods = [...despacho.productos];
+    const { idx } = modalProd;
+    const prod = prods[idx];
+    const cant = parseInt(cantReal) || 0;
+    const estado = cant === 0 ? "pendiente" : cant === prod.cantEsperada ? "ok" : "diferencia";
+    prods[idx] = { ...prod, cantReal: cant, vencimiento: vencimiento || prod.vencimiento || "", estado, escaneado: true, _ts: Date.now() };
+    const actualizado = { ...despacho, productos: prods };
+    guardarDespacho(actualizado);
+    setModalProd(null);
+    clearTimeout(window._recepTimer);
+    window._recepTimer = setTimeout(() => {
+      api.post("recepcion_despacho", { info: actualizado.info, operario, productos: actualizado.productos, timestamp: new Date().toISOString() });
+    }, 1500);
+  }
+
+  function setCantidad(idx, valor) {
+    if (!despacho) return;
+    const prods = [...despacho.productos];
+    const prod = prods[idx];
+    const cant = parseInt(valor) || 0;
+    const estado = cant === prod.cantEsperada ? "ok" : cant > 0 ? "diferencia" : "pendiente";
+    prods[idx] = { ...prod, cantReal: cant, estado, _ts: Date.now() };
+    const actualizado = { ...despacho, productos: prods };
+    guardarDespacho(actualizado);
+    clearTimeout(window._recepTimer);
+    window._recepTimer = setTimeout(() => {
+      api.post("recepcion_despacho", { info: actualizado.info, operario, productos: actualizado.productos, timestamp: new Date().toISOString() });
+    }, 2000);
+  }
+
   function handleCSV(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -2990,963 +2981,200 @@ function ModRecepcion({ toast, operarios }) {
     reader.onload = (ev) => {
       try {
         const { info, productos } = parseDespachoCSV(ev.target.result);
-        if (productos.length === 0) {
-          toast("⚠️ No se encontraron productos en el CSV", "error");
-          return;
-        }
-        const nuevo = {
-          info,
-          productos,
-          operario,
-          cargadoEn: new Date().toISOString(),
-        };
+        if (productos.length === 0) { toast("⚠️ No se encontraron productos", "error"); return; }
+        const nuevo = { info, productos, operario, cargadoEn: new Date().toISOString() };
         guardarDespacho(nuevo);
-        api.post("recepcion_despacho", {
-          info: nuevo.info,
-          operario: nuevo.operario,
-          productos: nuevo.productos,
-          timestamp: new Date().toISOString(),
-        });
+        api.post("recepcion_despacho", { info: nuevo.info, operario, productos: nuevo.productos, timestamp: new Date().toISOString() });
         setTab("control");
-        toast(
-          `✅ ${productos.length} productos cargados · Carga ${info.nroCarga}`
-        );
-      } catch {
-        toast("❌ Error al leer el CSV", "error");
-      }
+        toast(`✅ ${productos.length} productos · Carga ${info.nroCarga}`);
+      } catch { toast("❌ Error al leer el CSV", "error"); }
     };
     reader.readAsText(file, "latin1");
   }
 
-  // ── Foto → IA detecta ───────────────────────────────────────
-  // ── Foto → Apps Script → IA detecta ────────────────────────
-  // REEMPLAZAR la función handleFoto en ModRecepcion
-  async function handleFoto(e) {
-    const file = e.target.files[0];
-    if (!file || !despacho) return;
-    setLoading(true);
-    setLoadingMsg("Analizando imagen con IA...");
-    const reader = new FileReader();
-    reader.onload = async (ev) => {
-      try {
-        // Extraer base64 sin el prefijo "data:image/jpeg;base64,"
-        const base64 = ev.target.result.split(",")[1];
-        const mediaType = file.type || "image/jpeg";
-
-        // Llamar al Apps Script proxy (no a Anthropic directamente)
-        const res = await fetch(APPS_SCRIPT_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            tipo: "analizar_foto",
-            data: { imageBase64: base64, mediaType },
-          }),
-          // SIN mode: "no-cors" — necesitamos leer la respuesta
-        });
-
-        const d = await res.json();
-
-        if (d.status !== "ok" || !d.resultado) {
-          throw new Error(d.mensaje || "Sin resultado de IA");
-        }
-
-        const iaResult = d.resultado;
-
-        // Buscar match en productos del CSV
-        const prods = despacho.productos || [];
-        let matchIdx = null;
-        let matchScore = 0;
-        prods.forEach((p, i) => {
-          let score = 0;
-          if (iaResult.codigo && p.codigo) {
-            const iaCod = iaResult.codigo.replace(/^0+/, "");
-            const pCod = p.codigo.replace(/^0+/, "");
-            if (iaCod === pCod) score += 3;
-          }
-          if (iaResult.ean && p.ean && iaResult.ean === p.ean) score += 2;
-          if (score > matchScore) {
-            matchScore = score;
-            matchIdx = i;
-          }
-        });
-
-        if (matchScore > 0 && matchIdx !== null) {
-          // ✅ MATCH: guardar vencimiento automáticamente
-          const prodsMod = [...prods];
-          prodsMod[matchIdx] = {
-            ...prodsMod[matchIdx],
-            vencimiento: iaResult.vencimiento || prodsMod[matchIdx].vencimiento,
-            fotoVerificada: true,
-            _ts: Date.now(),
-          };
-          const actualizado = { ...despacho, productos: prodsMod };
-          guardarDespacho(actualizado);
-          clearTimeout(window._recepcionTimer);
-          window._recepcionTimer = setTimeout(() => {
-            api.post("recepcion_despacho", {
-              info: actualizado.info,
-              operario,
-              productos: actualizado.productos,
-              timestamp: new Date().toISOString(),
-            });
-          }, 1500);
-          setFocusIdx(matchIdx);
-          const prod = prods[matchIdx];
-          const vencMsg = iaResult.vencimiento
-            ? ` · Vence: ${iaResult.vencimiento}`
-            : "";
-          toast(`📷 ${prod.descripcion}${vencMsg} — ingresá la cantidad`);
-        } else {
-          // ❌ NO MATCH: panel para carga manual como extra
-          setConfirmPanel({
-            iaResult,
-            matchIdx: null,
-            cantReal: "",
-            esExtra: true,
-          });
-        }
-      } catch (err) {
-        console.error("handleFoto error:", err);
-        toast(
-          "⚠️ No se pudo analizar la imagen. Podés cargarlo manual.",
-          "error"
-        );
-        setConfirmPanel({
-          iaResult: { codigo: "", ean: "", descripcion: "", vencimiento: "" },
-          matchIdx: null,
-          cantReal: "",
-          esExtra: true,
-          manualError: true,
-        });
-      } finally {
-        setLoading(false);
-        setLoadingMsg("");
-      }
-    };
-    reader.readAsDataURL(file);
-  }
-
-  // ── Confirmar producto extra desde el panel ────────────────
-  function confirmarProducto() {
-    if (!confirmPanel || !despacho) return;
-    const { iaResult, cantReal } = confirmPanel;
-    const cant = parseInt(cantReal) || 0;
-    const prods = [...(despacho.productos || [])];
-
-    prods.push({
-      id: `extra-${Date.now()}`,
-      codigo: iaResult.codigo || "—",
-      ean: iaResult.ean || "",
-      descripcion: iaResult.descripcion || "Producto extra",
-      cantEsperada: 0,
-      cantReal: cant,
-      unidad: "BULTOS",
-      empresa: "",
-      factura: "",
-      estado: "extra",
-      vencimiento: iaResult.vencimiento || "",
-      fotoVerificada: true,
-      esExtra: true,
-      _ts: Date.now(),
-    });
-
-    const actualizado = { ...despacho, productos: prods };
-    guardarDespacho(actualizado);
-    setConfirmPanel(null);
-
-    clearTimeout(window._recepcionTimer);
-    window._recepcionTimer = setTimeout(() => {
-      api.post("recepcion_despacho", {
-        info: actualizado.info,
-        operario,
-        productos: actualizado.productos,
-        timestamp: new Date().toISOString(),
-      });
-    }, 1500);
-
-    toast("➕ Producto extra agregado");
-  }
-
-  // ── Editar cantidad manual desde la lista ──────────────────
-  function setCantidad(idx, valor) {
-    if (!despacho) return;
-    const prods = [...despacho.productos];
-    const prod = prods[idx];
-    const cant = parseInt(valor) || 0;
-    const estado =
-      cant === prod.cantEsperada ? "ok" : cant > 0 ? "diferencia" : "pendiente";
-    prods[idx] = { ...prod, cantReal: cant, estado, _ts: Date.now() };
-    const actualizado = { ...despacho, productos: prods };
-    guardarDespacho(actualizado);
-    clearTimeout(window._recepcionTimer);
-    window._recepcionTimer = setTimeout(() => {
-      api.post("recepcion_despacho", {
-        info: actualizado.info,
-        operario,
-        productos: actualizado.productos,
-        timestamp: new Date().toISOString(),
-      });
-    }, 2000);
-  }
-
-  // ── Finalizar ───────────────────────────────────────────────
   function finalizarRecepcion() {
     if (!despacho) return;
-    api.post("recepcion_despacho", {
-      info: despacho.info,
-      operario,
-      productos: despacho.productos,
-      timestamp: new Date().toISOString(),
-    });
-    const entrada = {
-      ...despacho,
-      finalizadaEn: new Date().toISOString(),
-      id: despacho.info?.nroCarga || Date.now(),
-      oculta: false,
-    };
-    guardarHistorial((prev) => {
-      const sinDup = prev.filter(
-        (h) => h.info?.nroCarga !== entrada.info?.nroCarga
-      );
-      return [entrada, ...sinDup];
-    });
+    api.post("recepcion_despacho", { info: despacho.info, operario, productos: despacho.productos, timestamp: new Date().toISOString() });
+    const entrada = { ...despacho, finalizadaEn: new Date().toISOString(), id: despacho.info?.nroCarga || Date.now() };
+    guardarHistorial((prev) => { const sinDup = prev.filter(h => h.info?.nroCarga !== entrada.info?.nroCarga); return [entrada, ...sinDup]; });
     guardarDespacho(null);
     setTab("resumen");
   }
 
-  function ocultarRecepcion(nroCarga) {
-    guardarHistorial((prev) =>
-      prev.map((h) =>
-        h.info?.nroCarga === nroCarga ? { ...h, oculta: true } : h
-      )
-    );
-    toast("Recepción ocultada del listado");
-  }
-
-  // ════════════════════════════════════════════════════════════
-  // RENDER — TAB CARGA
-  // ════════════════════════════════════════════════════════════
-  if (tab === "carga")
+  // ── Modal cantidad + vencimiento ────────────────────────
+  function ModalCantVenc() {
+    if (!modalProd) return null;
+    const { idx, prod } = modalProd;
+    const [cant, setCant] = useState(prod.cantReal ?? prod.cantEsperada ?? "");
+    const [venc, setVenc] = useState(prod.vencimiento || "");
+    const diff = parseInt(cant) - prod.cantEsperada;
+    const diffColor = diff === 0 ? C.green : diff < 0 ? C.orange : C.blue;
     return (
-      <div style={BS}>
-        <div style={card()}>
-          <div style={secTit}>📦 RECEPCIÓN DE MERCADERÍA</div>
-
-          {/* Indicador sync */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-              marginBottom: "12px",
-            }}
-          >
-            <div
-              style={{
-                width: "8px",
-                height: "8px",
-                borderRadius: "50%",
-                background: syncOk ? C.green : C.muted,
-              }}
-            />
-            <span style={{ fontSize: "10px", color: C.muted }}>
-              {syncOk ? `Sincronizado ${lastSync}` : "Conectando..."}
-            </span>
+      <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:2000, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+        <div style={{ ...card({ borderColor:C.accent }), width:"100%", maxWidth:"500px", borderRadius:"16px 16px 0 0", padding:"20px" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px" }}>
+            <div style={{ fontWeight:700, fontSize:"15px" }}>📦 {prod.descripcion.slice(0,40)}</div>
+            <button style={btn({ background:C.surf2, color:C.muted, padding:"4px 10px", fontSize:"12px" })} onClick={() => setModalProd(null)}>✕</button>
           </div>
-
-          <div style={{ marginBottom: "12px" }}>
-            <label style={lbl}>Operario que recepciona</label>
-            <select
-              style={inp}
-              value={operario}
-              onChange={(e) => setOperario(e.target.value)}
-            >
-              <option value="">— Seleccionar —</option>
-              {operarios.map((op) => (
-                <option key={op.id} value={op.nombre}>
-                  {op.nombre}
-                </option>
-              ))}
-            </select>
+          <div style={{ background:C.surf2, borderRadius:"8px", padding:"10px", marginBottom:"12px", fontSize:"11px", color:C.muted }}>
+            Cód: {prod.codigo} · Esperado: <strong style={{ color:C.text }}>{prod.cantEsperada} {prod.unidad}</strong>
           </div>
-
-          <label
-            style={{
-              ...btn({
-                background: `linear-gradient(135deg,${C.accent},#5b21b6)`,
-                color: "#fff",
-                width: "100%",
-                fontSize: "14px",
-                padding: "14px",
-              }),
-              cursor: "pointer",
-            }}
-          >
-            📂 Cargar CSV de Despacho
-            <input
-              type="file"
-              accept=".csv,.txt"
-              style={{ display: "none" }}
-              onChange={handleCSV}
-            />
-          </label>
-          <p
-            style={{
-              fontSize: "11px",
-              color: C.muted,
-              marginTop: "10px",
-              lineHeight: 1.5,
-            }}
-          >
-            Cargá el archivo CSV de Arcor. El sistema extrae todos los productos
-            automáticamente.
-          </p>
-        </div>
-
-        {despacho && (
-          <div style={card({ borderColor: C.green })}>
-            <div style={secTit}>📋 DESPACHO EN CURSO</div>
-            <div style={{ fontSize: "13px", marginBottom: "4px" }}>
-              <strong>Nro. Carga:</strong> {despacho.info.nroCarga} ·{" "}
-              <strong>Fecha:</strong> {despacho.info.fecha}
+          <label style={lbl}>Cantidad recibida</label>
+          <input
+            type="number" inputMode="numeric"
+            style={{ ...inp, fontSize:"32px", fontWeight:900, textAlign:"center", padding:"14px", marginBottom:"8px",
+              borderColor: parseInt(cant) === prod.cantEsperada ? C.green : parseInt(cant) < prod.cantEsperada ? C.orange : C.blue }}
+            value={cant} onChange={e => setCant(e.target.value)} autoFocus
+          />
+          {cant !== "" && parseInt(cant) !== prod.cantEsperada && (
+            <div style={{ textAlign:"center", fontSize:"13px", fontWeight:700, color:diffColor, marginBottom:"8px" }}>
+              {diff > 0 ? `+${diff} de más` : `${diff} de menos`}
             </div>
-            <div
-              style={{ fontSize: "12px", color: C.muted, marginBottom: "8px" }}
-            >
-              Chofer: {despacho.info.chofer} · Pallets: {despacho.info.pallets}
-            </div>
-            {(() => {
-              const total = (despacho.productos || []).length;
-              const verificados = (despacho.productos || []).filter(
-                (p) => p.fotoVerificada || p.cantReal !== null
-              ).length;
-              return (
-                <div style={{ marginBottom: "10px" }}>
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      fontSize: "11px",
-                      color: C.muted,
-                      marginBottom: "4px",
-                    }}
-                  >
-                    <span>Progreso</span>
-                    <span>
-                      {verificados}/{total}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      height: "4px",
-                      background: C.bord,
-                      borderRadius: "2px",
-                    }}
-                  >
-                    <div
-                      style={{
-                        height: "100%",
-                        width: `${
-                          total > 0 ? (verificados / total) * 100 : 0
-                        }%`,
-                        background: C.green,
-                        borderRadius: "2px",
-                        transition: "width .3s",
-                      }}
-                    />
-                  </div>
-                </div>
-              );
-            })()}
+          )}
+          <label style={{ ...lbl, marginTop:"10px" }}>Vencimiento (MM/AAAA)</label>
+          <input
+            type="text" inputMode="numeric" placeholder="MM/AAAA" maxLength={7}
+            style={{ ...inp, marginBottom:"16px", fontSize:"22px", textAlign:"center", letterSpacing:"4px" }}
+            value={venc}
+            onChange={e => {
+              let v = e.target.value.replace(/\D/g,"");
+              if (v.length > 2) v = v.slice(0,2)+"/"+v.slice(2,6);
+              setVenc(v);
+            }}
+          />
+          <div style={{ display:"flex", gap:"8px" }}>
+            <button style={btn({ background:C.surf2, color:C.muted, border:`1px solid ${C.bord}`, flex:1 })} onClick={() => setModalProd(null)}>Cancelar</button>
             <button
-              style={btn({
-                background: C.green,
-                color: "#0a0c10",
-                fontWeight: 700,
-                width: "100%",
-              })}
-              onClick={() => setTab("control")}
-            >
-              → Continuar control
-            </button>
+              style={btn({ background: parseInt(cant)===prod.cantEsperada ? `linear-gradient(135deg,${C.green},#059669)` : `linear-gradient(135deg,${C.orange},#e67e22)`, color:"#fff", fontWeight:700, flex:2, fontSize:"14px" })}
+              disabled={cant === ""}
+              onClick={() => confirmarModal(cant, venc)}
+            >✓ Confirmar</button>
           </div>
-        )}
-
-        {historialVisible.length > 0 && (
-          <div style={card()}>
-            <div style={secTit}>🗂 ÚLTIMAS RECEPCIONES (3 días)</div>
-            {historialVisible.map((h) => {
-              const ok = (h.productos || []).filter(
-                (p) => p.estado === "ok"
-              ).length;
-              const diff = (h.productos || []).filter(
-                (p) => p.estado === "diferencia"
-              ).length;
-              const total = (h.productos || []).length;
-              const fechaStr = h.finalizadaEn
-                ? new Date(h.finalizadaEn).toLocaleDateString("es-AR", {
-                    day: "2-digit",
-                    month: "2-digit",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })
-                : "—";
-              return (
-                <div
-                  key={h.info?.nroCarga || h.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "10px",
-                    padding: "10px 0",
-                    borderBottom: `1px solid ${C.bord}`,
-                  }}
-                >
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 700, fontSize: "13px" }}>
-                      Carga #{h.info?.nroCarga}
-                    </div>
-                    <div style={{ fontSize: "11px", color: C.muted }}>
-                      {fechaStr} · {h.operario || "—"}
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: "6px",
-                        marginTop: "4px",
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <span style={pill(C.green)}>{ok} OK</span>
-                      {diff > 0 && (
-                        <span style={pill(C.orange)}>{diff} difer.</span>
-                      )}
-                      <span style={pill(C.muted)}>{total} total</span>
-                    </div>
-                  </div>
-                  <button
-                    style={btn({
-                      background: "transparent",
-                      color: C.red,
-                      border: `1px solid ${C.bord}`,
-                      padding: "6px 10px",
-                      fontSize: "12px",
-                    })}
-                    title="Ocultar (los datos se conservan para métricas)"
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `¿Ocultar Carga #${h.info?.nroCarga}? Los datos se conservan para métricas.`
-                        )
-                      )
-                        ocultarRecepcion(h.info?.nroCarga);
-                    }}
-                  >
-                    🗑
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        </div>
       </div>
     );
+  }
 
-  // ════════════════════════════════════════════════════════════
-  // RENDER — TAB CONTROL
-  // ════════════════════════════════════════════════════════════
+  // ── TAB CARGA ────────────────────────────────────────────
+  if (tab === "carga") return (
+    <div style={BS}>
+      <div style={card()}>
+        <div style={secTit}>📦 RECEPCIÓN DE MERCADERÍA</div>
+        <div style={{ display:"flex", alignItems:"center", gap:"6px", marginBottom:"12px" }}>
+          <div style={{ width:"8px", height:"8px", borderRadius:"50%", background:syncOk?C.green:C.muted }} />
+          <span style={{ fontSize:"10px", color:C.muted }}>{syncOk?`Sync ${lastSync}`:"Conectando..."}</span>
+          <span style={{ fontSize:"10px", color:maestro.length>0?C.green:C.muted, marginLeft:"8px" }}>
+            {maestro.length>0?`📋 Maestro: ${maestro.length} arts.`:"📋 Sin maestro"}
+          </span>
+        </div>
+        <div style={{ marginBottom:"12px" }}>
+          <label style={lbl}>Operario</label>
+          <select style={inp} value={operario} onChange={e => setOperario(e.target.value)}>
+            <option value="">— Seleccionar —</option>
+            {operarios.map(op => <option key={op.id} value={op.nombre}>{op.nombre}</option>)}
+          </select>
+        </div>
+        <label style={{ ...btn({ background:`linear-gradient(135deg,${C.accent},#5b21b6)`, color:"#fff", width:"100%", fontSize:"14px", padding:"14px" }), cursor:"pointer" }}>
+          📂 Cargar CSV de Despacho Arcor
+          <input type="file" accept=".csv,.txt" style={{ display:"none" }} onChange={handleCSV} />
+        </label>
+      </div>
+
+      {despacho && (
+        <div style={card({ borderColor:C.green })}>
+          <div style={secTit}>📋 DESPACHO EN CURSO</div>
+          <div style={{ fontSize:"13px", marginBottom:"4px" }}><strong>Nro:</strong> {despacho.info.nroCarga} · <strong>Fecha:</strong> {despacho.info.fecha}</div>
+          <div style={{ fontSize:"12px", color:C.muted, marginBottom:"8px" }}>Chofer: {despacho.info.chofer} · Pallets: {despacho.info.pallets}</div>
+          {(() => {
+            const total = (despacho.productos||[]).length;
+            const verificados = (despacho.productos||[]).filter(p => p.cantReal !== null).length;
+            return (
+              <div style={{ marginBottom:"10px" }}>
+                <div style={{ display:"flex", justifyContent:"space-between", fontSize:"11px", color:C.muted, marginBottom:"4px" }}>
+                  <span>Progreso</span><span>{verificados}/{total}</span>
+                </div>
+                <div style={{ height:"4px", background:C.bord, borderRadius:"2px" }}>
+                  <div style={{ height:"100%", width:`${total>0?(verificados/total)*100:0}%`, background:C.green, borderRadius:"2px", transition:"width .3s" }} />
+                </div>
+              </div>
+            );
+          })()}
+          <button style={btn({ background:C.green, color:"#0a0c10", fontWeight:700, width:"100%" })} onClick={() => setTab("control")}>→ Continuar control</button>
+        </div>
+      )}
+    </div>
+  );
+
+  // ── TAB CONTROL ──────────────────────────────────────────
   if (tab === "control" && despacho) {
     const prods = despacho.productos || [];
-    const total = prods.length;
-    const ok = prods.filter((p) => p.estado === "ok").length;
-    const diff = prods.filter((p) => p.estado === "diferencia").length;
-    const pend = prods.filter((p) => p.estado === "pendiente").length;
-    const extra = prods.filter((p) => p.estado === "extra").length;
-    const pct = total > 0 ? Math.round(((ok + diff + extra) / total) * 100) : 0;
-    const empresas = [...new Set(prods.map((p) => p.empresa || "EXTRA"))];
+    const ok = prods.filter(p=>p.estado==="ok").length;
+    const diff = prods.filter(p=>p.estado==="diferencia").length;
+    const pend = prods.filter(p=>!p.estado||p.estado==="pendiente").length;
+    const pct = prods.length>0 ? Math.round(((ok+diff)/prods.length)*100) : 0;
+    const empresas = [...new Set(prods.map(p=>p.empresa||"OTROS"))];
 
     return (
       <div style={BS}>
-        {/* Spinner de carga IA */}
-        {loading && (
-          <div
-            style={{
-              position: "fixed",
-              inset: 0,
-              background: "rgba(0,0,0,.8)",
-              zIndex: 2000,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              flexDirection: "column",
-              gap: "12px",
-            }}
-          >
-            <div
-              style={{
-                width: "52px",
-                height: "52px",
-                border: `4px solid ${C.accent}`,
-                borderTopColor: "transparent",
-                borderRadius: "50%",
-                animation: "spin 1s linear infinite",
-              }}
-            />
-            <div style={{ color: "#fff", fontSize: "14px" }}>{loadingMsg}</div>
+        <ModalCantVenc />
+        <div style={card({ padding:"12px 14px" })}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"8px" }}>
+            <span style={{ fontWeight:700, fontSize:"15px" }}>Carga #{despacho.info.nroCarga}</span>
+            <div style={{ width:"7px", height:"7px", borderRadius:"50%", background:syncOk?C.green:C.muted }} />
           </div>
-        )}
-
-        {/* Panel — SOLO para productos no encontrados en CSV */}
-        {confirmPanel && (
-          <div
-            style={{
-              position: "fixed",
-              inset: 0,
-              background: "rgba(0,0,0,.85)",
-              zIndex: 1500,
-              display: "flex",
-              alignItems: "flex-end",
-              justifyContent: "center",
-            }}
-          >
-            <div
-              style={{
-                ...card({ borderColor: C.orange }),
-                width: "100%",
-                maxWidth: "500px",
-                borderRadius: "16px 16px 0 0",
-                padding: "20px",
-                maxHeight: "90vh",
-                overflowY: "auto",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: "14px",
-                }}
-              >
-                <div style={{ fontWeight: 700, fontSize: "15px" }}>
-                  ⚠️ Producto no encontrado en CSV
-                </div>
-                <button
-                  style={btn({
-                    background: C.surf2,
-                    color: C.muted,
-                    padding: "4px 10px",
-                    fontSize: "12px",
-                  })}
-                  onClick={() => setConfirmPanel(null)}
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* Lo que detectó la IA */}
-              <div
-                style={{
-                  background: C.surf2,
-                  borderRadius: "8px",
-                  padding: "12px",
-                  marginBottom: "14px",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: "10px",
-                    color: C.blue,
-                    fontWeight: 700,
-                    letterSpacing: "1px",
-                    marginBottom: "8px",
-                  }}
-                >
-                  📷 DETECTADO POR IA
-                </div>
-                <div
-                  style={{
-                    fontSize: "13px",
-                    fontWeight: 700,
-                    marginBottom: "4px",
-                  }}
-                >
-                  {confirmPanel.iaResult.descripcion || "—"}
-                </div>
-                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
-                  {confirmPanel.iaResult.codigo && (
-                    <span style={pill(C.blue)}>
-                      Cód: {confirmPanel.iaResult.codigo}
-                    </span>
-                  )}
-                  {confirmPanel.iaResult.vencimiento &&
-                    (() => {
-                      const st = vencSt(confirmPanel.iaResult.vencimiento);
-                      return (
-                        <span style={pill(st.c)}>
-                          Vence: {confirmPanel.iaResult.vencimiento} · {st.l}
-                        </span>
-                      );
-                    })()}
-                </div>
-              </div>
-
-              {/* Campos editables */}
-              <div
-                style={{
-                  background: "rgba(255,140,66,.08)",
-                  border: `1px solid ${C.orange}40`,
-                  borderRadius: "8px",
-                  padding: "12px",
-                  marginBottom: "14px",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: "11px",
-                    color: C.orange,
-                    marginBottom: "10px",
-                  }}
-                >
-                  Se va a guardar como <strong>producto extra</strong>. Editá
-                  los datos si es necesario.
-                </div>
-                <label style={lbl}>Descripción</label>
-                <input
-                  style={{ ...inp, marginBottom: "6px" }}
-                  value={confirmPanel.iaResult.descripcion || ""}
-                  onChange={(e) =>
-                    setConfirmPanel((p) => ({
-                      ...p,
-                      iaResult: { ...p.iaResult, descripcion: e.target.value },
-                    }))
-                  }
-                  placeholder="Nombre del producto"
-                />
-                <label style={lbl}>Código interno</label>
-                <input
-                  style={{ ...inp, marginBottom: "6px" }}
-                  value={confirmPanel.iaResult.codigo || ""}
-                  onChange={(e) =>
-                    setConfirmPanel((p) => ({
-                      ...p,
-                      iaResult: { ...p.iaResult, codigo: e.target.value },
-                    }))
-                  }
-                  placeholder="Ej: 14361"
-                />
-                <label style={lbl}>Fecha vencimiento</label>
-                <input
-                  style={inp}
-                  type="date"
-                  value={confirmPanel.iaResult.vencimiento || ""}
-                  onChange={(e) =>
-                    setConfirmPanel((p) => ({
-                      ...p,
-                      iaResult: { ...p.iaResult, vencimiento: e.target.value },
-                    }))
-                  }
-                />
-              </div>
-
-              {/* Cantidad */}
-              <div style={{ marginBottom: "16px" }}>
-                <label style={{ ...lbl, fontSize: "12px" }}>
-                  Cantidad de bultos
-                </label>
-                <input
-                  type="number"
-                  style={{
-                    ...inp,
-                    fontSize: "28px",
-                    fontWeight: 900,
-                    textAlign: "center",
-                    padding: "14px",
-                    borderColor: C.orange,
-                  }}
-                  placeholder="0"
-                  value={confirmPanel.cantReal}
-                  onChange={(e) =>
-                    setConfirmPanel((p) => ({ ...p, cantReal: e.target.value }))
-                  }
-                  autoFocus
-                />
-              </div>
-
-              <div style={{ display: "flex", gap: "8px" }}>
-                <button
-                  style={btn({
-                    background: "transparent",
-                    color: C.muted,
-                    border: `1px solid ${C.bord}`,
-                    flex: 1,
-                  })}
-                  onClick={() => setConfirmPanel(null)}
-                >
-                  Cancelar
-                </button>
-                <button
-                  style={btn({
-                    background: `linear-gradient(135deg,${C.orange},#e67e22)`,
-                    color: "#fff",
-                    fontWeight: 700,
-                    flex: 2,
-                    fontSize: "14px",
-                  })}
-                  onClick={confirmarProducto}
-                >
-                  ➕ Guardar como extra
-                </button>
-              </div>
-            </div>
+          <div style={{ height:"6px", background:C.bord, borderRadius:"3px", marginBottom:"8px" }}>
+            <div style={{ height:"100%", width:`${pct}%`, background:`linear-gradient(90deg,${C.green},${C.blue})`, borderRadius:"3px", transition:"width .3s" }} />
           </div>
-        )}
-
-        {/* Header stats */}
-        <div style={card({ padding: "12px 14px" })}>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "8px",
-            }}
-          >
-            <span style={{ fontWeight: 700, fontSize: "15px" }}>
-              Carga #{despacho.info.nroCarga}
-            </span>
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <span style={{ fontSize: "11px", color: C.muted }}>
-                {despacho.info.fecha}
-              </span>
-              <div
-                style={{
-                  width: "7px",
-                  height: "7px",
-                  borderRadius: "50%",
-                  background: syncOk ? C.green : C.muted,
-                }}
-                title={syncOk ? `Sync ${lastSync}` : "Sin sync"}
-              />
-            </div>
-          </div>
-          <div
-            style={{
-              height: "6px",
-              background: C.bord,
-              borderRadius: "3px",
-              marginBottom: "8px",
-            }}
-          >
-            <div
-              style={{
-                height: "100%",
-                width: `${pct}%`,
-                background: `linear-gradient(90deg,${C.green},${C.blue})`,
-                borderRadius: "3px",
-                transition: "width .3s",
-              }}
-            />
-          </div>
-          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-            <span style={pill(C.muted)}>⏳ {pend} pendientes</span>
+          <div style={{ display:"flex", gap:"8px", flexWrap:"wrap", marginBottom:"10px" }}>
+            <span style={pill(C.muted)}>⏳ {pend}</span>
             <span style={pill(C.green)}>✓ {ok} OK</span>
-            {diff > 0 && (
-              <span style={pill(C.orange)}>⚠ {diff} diferencias</span>
-            )}
-            {extra > 0 && <span style={pill(C.blue)}>➕ {extra} extras</span>}
+            {diff>0 && <span style={pill(C.orange)}>⚠ {diff} difer.</span>}
           </div>
+          <button
+            style={btn({ background:scanActivo?`linear-gradient(135deg,${C.green},#059669)`:`linear-gradient(135deg,${C.accent},#5b21b6)`, color:scanActivo?"#0a0c10":"#fff", width:"100%", fontSize:"14px", padding:"12px", fontWeight:700 })}
+            onClick={() => { setScanActivo(v=>!v); bufferRef.current=""; setScanBuffer(""); }}
+          >
+            {scanActivo ? `🔫 ESCÁNER ACTIVO · ${scanBuffer||"Esperando..."}` : "🔫 Activar escáner Bluetooth"}
+          </button>
+          {ultimoScan && (
+            <div style={{ marginTop:"8px", padding:"8px 10px", background:ultimoScan.prod?"rgba(6,214,160,.1)":"rgba(255,71,87,.1)", borderRadius:"8px", fontSize:"12px", color:ultimoScan.prod?C.green:C.red }}>
+              {ultimoScan.prod ? `✓ ${ultimoScan.prod.descripcion.slice(0,40)}` : `⚠ EAN ${ultimoScan.ean} no encontrado`}
+            </div>
+          )}
         </div>
 
-        {/* Botón foto global — captura nueva foto para detectar producto */}
-        <label
-          style={{
-            ...btn({
-              background: `linear-gradient(135deg,${C.accent},#5b21b6)`,
-              color: "#fff",
-              width: "100%",
-              fontSize: "15px",
-              padding: "16px",
-            }),
-            cursor: "pointer",
-          }}
-        >
-          📷 FOTOGRAFIAR PRODUCTO
-          <input
-            type="file"
-            accept="image/*"
-            capture="environment"
-            style={{ display: "none" }}
-            onChange={handleFoto}
-          />
-        </label>
-
-        {/* Lista de productos por empresa */}
-        {empresas.map((empresa) => {
-          const prodsEmp = prods.filter(
-            (p) => (p.empresa || "EXTRA") === empresa
-          );
+        {empresas.map(empresa => {
+          const prodsEmp = prods.filter(p=>(p.empresa||"OTROS")===empresa);
           return (
             <div key={empresa} style={card()}>
-              <div
-                style={{
-                  ...secTit,
-                  color: empresa === "EXTRA" ? C.blue : C.gold,
-                }}
-              >
-                {empresa === "EXTRA" ? "➕ PRODUCTOS EXTRA" : empresa} —{" "}
-                {prodsEmp.length} productos
-              </div>
-              {prodsEmp.map((prod) => {
+              <div style={{ ...secTit, color:C.gold }}>{empresa} — {prodsEmp.length} productos</div>
+              {prodsEmp.map(prod => {
                 const idx = prods.indexOf(prod);
-                const esOk = prod.estado === "ok";
-                const esDiff = prod.estado === "diferencia";
-                const esPend = prod.estado === "pendiente";
-                const esExtra = prod.estado === "extra";
-                const isFocused = focusIdx === idx;
-                const borderColor = isFocused
-                  ? C.accent
-                  : esOk
-                  ? C.green
-                  : esDiff
-                  ? C.orange
-                  : esExtra
-                  ? C.blue
-                  : C.bord;
-
+                const esOk = prod.estado==="ok";
+                const esDiff = prod.estado==="diferencia";
+                const borderColor = esOk?C.green:esDiff?C.orange:C.bord;
                 return (
-                  <div
-                    key={prod.id}
-                    ref={isFocused ? focusRef : null}
-                    style={{
-                      borderLeft: `3px solid ${borderColor}`,
-                      paddingLeft: "10px",
-                      marginBottom: "12px",
-                      paddingBottom: "10px",
-                      borderBottom: `1px solid ${C.bord}`,
-                      background: isFocused ? `${C.accent}12` : "transparent",
-                      borderRadius: isFocused ? "0 8px 8px 0" : undefined,
-                      transition: "background .4s",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "flex-start",
-                        marginBottom: "6px",
-                      }}
-                    >
-                      <div style={{ flex: 1 }}>
-                        <div
-                          style={{
-                            fontWeight: 700,
-                            fontSize: "13px",
-                            lineHeight: 1.3,
-                          }}
-                        >
-                          {prod.descripcion}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: "10px",
-                            color: C.muted,
-                            marginTop: "2px",
-                          }}
-                        >
+                  <div key={prod.id} style={{ borderLeft:`3px solid ${borderColor}`, paddingLeft:"10px", marginBottom:"10px", paddingBottom:"10px", borderBottom:`1px solid ${C.bord}`, background:esOk?"rgba(6,214,160,.04)":esDiff?"rgba(255,140,66,.04)":"transparent", borderRadius:"0 6px 6px 0", cursor:"pointer" }}
+                    onClick={() => setModalProd({ idx, prod })}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontWeight:700, fontSize:"13px" }}>{prod.descripcion}</div>
+                        <div style={{ fontSize:"10px", color:C.muted, marginTop:"2px" }}>
                           Cód: {prod.codigo}
-                          {prod.factura ? ` · Fact: ${prod.factura}` : ""}
-                          {prod.fotoVerificada && (
-                            <span style={{ color: C.green, marginLeft: "6px" }}>
-                              📷✓
-                            </span>
-                          )}
+                          {prod.escaneado && <span style={{ color:C.green, marginLeft:"6px" }}>🔫</span>}
+                          {prod.vencimiento && <span style={{ color:C.blue, marginLeft:"6px" }}>📅 {prod.vencimiento}</span>}
                         </div>
-                        {prod.vencimiento &&
-                          (() => {
-                            const st = vencSt(prod.vencimiento);
-                            return (
-                              <span
-                                style={{
-                                  ...pill(st.c),
-                                  marginTop: "4px",
-                                  display: "inline-flex",
-                                  fontSize: "9px",
-                                }}
-                              >
-                                Vence {prod.vencimiento} · {st.l}
-                              </span>
-                            );
-                          })()}
                       </div>
-                      <div
-                        style={{
-                          textAlign: "right",
-                          flexShrink: 0,
-                          marginLeft: "8px",
-                        }}
-                      >
-                        <div style={{ fontWeight: 700, fontSize: "16px" }}>
-                          {esExtra ? "—" : prod.cantEsperada}
+                      <div style={{ textAlign:"right", flexShrink:0, marginLeft:"8px" }}>
+                        <div style={{ fontSize:"20px", fontWeight:900, color:esOk?C.green:esDiff?C.orange:C.text }}>
+                          {prod.cantReal !== null ? prod.cantReal : "—"}
                         </div>
-                        <div style={{ fontSize: "9px", color: C.muted }}>
-                          {prod.unidad}
-                        </div>
+                        <div style={{ fontSize:"9px", color:C.muted }}>/ {prod.cantEsperada} {prod.unidad}</div>
                       </div>
                     </div>
-
-                    {/* Input cantidad manual */}
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: "8px",
-                        alignItems: "center",
-                      }}
-                    >
-                      <div style={{ flex: 1 }}>
-                        <input
-                          type="number"
-                          style={{
-                            ...inp,
-                            fontSize: "18px",
-                            fontWeight: 700,
-                            textAlign: "center",
-                            borderColor: esOk
-                              ? C.green
-                              : esDiff
-                              ? C.orange
-                              : C.bord,
-                            color: esOk ? C.green : esDiff ? C.orange : C.text,
-                          }}
-                          placeholder={
-                            esExtra ? "Cantidad" : `Esp: ${prod.cantEsperada}`
-                          }
-                          value={prod.cantReal ?? ""}
-                          onChange={(e) => setCantidad(idx, e.target.value)}
-                        />
-                      </div>
-                      <div style={{ fontSize: "24px", flexShrink: 0 }}>
-                        {esOk && "✅"}
-                        {esDiff && "⚠️"}
-                        {esExtra && "➕"}
-                        {esPend && <span style={{ color: C.muted }}>○</span>}
-                      </div>
-                    </div>
-
                     {esDiff && prod.cantReal !== null && (
-                      <div
-                        style={{
-                          marginTop: "6px",
-                          padding: "4px 8px",
-                          background: "rgba(255,140,66,.15)",
-                          borderRadius: "6px",
-                          fontSize: "11px",
-                          color: C.orange,
-                          fontWeight: 600,
-                        }}
-                      >
-                        ⚠ Diferencia: esperado {prod.cantEsperada} · recibido{" "}
-                        {prod.cantReal}
+                      <div style={{ marginTop:"4px", padding:"3px 8px", background:"rgba(255,140,66,.15)", borderRadius:"6px", fontSize:"11px", color:C.orange, fontWeight:600 }}>
+                        ⚠ {prod.cantReal - prod.cantEsperada > 0 ? "+" : ""}{prod.cantReal - prod.cantEsperada} {prod.unidad}
                       </div>
                     )}
                   </div>
@@ -3956,155 +3184,343 @@ function ModRecepcion({ toast, operarios }) {
           );
         })}
 
-        {/* Botones finales */}
         <div style={card()}>
-          <button
-            style={btn({
-              background: `linear-gradient(135deg,${C.green},#059669)`,
-              color: "#0a0c10",
-              fontWeight: 700,
-              width: "100%",
-              fontSize: "14px",
-              padding: "14px",
-              marginBottom: "8px",
-            })}
-            onClick={finalizarRecepcion}
-          >
+          <button style={btn({ background:`linear-gradient(135deg,${C.green},#059669)`, color:"#0a0c10", fontWeight:700, width:"100%", fontSize:"14px", padding:"14px", marginBottom:"8px" })} onClick={finalizarRecepcion}>
             ✓ FINALIZAR Y ENVIAR AL SHEET
           </button>
-          <button
-            style={btn({
-              background: "transparent",
-              color: C.muted,
-              border: `1px solid ${C.bord}`,
-              width: "100%",
-            })}
-            onClick={() => setTab("carga")}
-          >
-            ← Volver
-          </button>
+          <button style={btn({ background:"transparent", color:C.muted, border:`1px solid ${C.bord}`, width:"100%" })} onClick={() => setTab("carga")}>← Volver</button>
         </div>
       </div>
     );
   }
 
-  // ════════════════════════════════════════════════════════════
-  // RENDER — RESUMEN POST-FINALIZACIÓN
-  // ════════════════════════════════════════════════════════════
+  // ── TAB RESUMEN ──────────────────────────────────────────
   if (tab === "resumen") {
     const ultima = historial[0];
-    if (!ultima) {
-      setTab("carga");
-      return null;
-    }
-    const ok = (ultima.productos || []).filter((p) => p.estado === "ok");
-    const diff = (ultima.productos || []).filter(
-      (p) => p.estado === "diferencia"
-    );
-    const extra = (ultima.productos || []).filter((p) => p.estado === "extra");
-    const pend = (ultima.productos || []).filter(
-      (p) => p.estado === "pendiente"
-    );
-
+    if (!ultima) { setTab("carga"); return null; }
+    const ok = (ultima.productos||[]).filter(p=>p.estado==="ok").length;
+    const diff = (ultima.productos||[]).filter(p=>p.estado==="diferencia").length;
+    const pend = (ultima.productos||[]).filter(p=>!p.estado||p.estado==="pendiente").length;
     return (
       <div style={BS}>
-        <div
-          style={card({
-            borderColor: C.green,
-            textAlign: "center",
-            padding: "24px",
-          })}
-        >
-          <div style={{ fontSize: "48px", marginBottom: "8px" }}>✅</div>
-          <div style={{ fontSize: "18px", fontWeight: 900, color: C.green }}>
-            Recepción completada
-          </div>
-          <div style={{ fontSize: "12px", color: C.muted, marginTop: "4px" }}>
-            Carga #{ultima.info?.nroCarga}
-          </div>
+        <div style={card({ borderColor:C.green, textAlign:"center", padding:"24px" })}>
+          <div style={{ fontSize:"48px", marginBottom:"8px" }}>✅</div>
+          <div style={{ fontSize:"18px", fontWeight:900, color:C.green }}>Recepción completada</div>
+          <div style={{ fontSize:"12px", color:C.muted }}>Carga #{ultima.info?.nroCarga}</div>
         </div>
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr 1fr 1fr",
-            gap: "6px",
-          }}
-        >
-          {[
-            [ok.length, "✓ OK", C.green],
-            [diff.length, "⚠ Difer.", C.orange],
-            [extra.length, "➕ Extra", C.blue],
-            [pend.length, "⏳ Pend.", C.muted],
-          ].map(([v, l, c]) => (
-            <div key={l} style={card({ padding: "10px", textAlign: "center" })}>
-              <div style={{ fontSize: "22px", fontWeight: 900, color: c }}>
-                {v}
-              </div>
-              <div style={{ fontSize: "9px", color: C.muted }}>{l}</div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px" }}>
+          {[[ok,"✓ OK",C.green],[diff,"⚠ Difer.",C.orange],[pend,"⏳ Pend.",C.muted]].map(([v,l,c]) => (
+            <div key={l} style={card({ padding:"10px", textAlign:"center" })}>
+              <div style={{ fontSize:"22px", fontWeight:900, color:c }}>{v}</div>
+              <div style={{ fontSize:"9px", color:C.muted }}>{l}</div>
             </div>
           ))}
         </div>
-
-        {diff.length > 0 && (
-          <div style={card({ borderColor: C.orange })}>
+        {diff > 0 && (
+          <div style={card({ borderColor:C.orange })}>
             <div style={secTit}>⚠️ DIFERENCIAS</div>
-            {diff.map((p) => (
-              <div
-                key={p.id}
-                style={{
-                  padding: "8px 0",
-                  borderBottom: `1px solid ${C.bord}`,
-                  fontSize: "12px",
-                }}
-              >
-                <div style={{ fontWeight: 600 }}>{p.descripcion}</div>
-                <div style={{ color: C.orange }}>
-                  Esperado: {p.cantEsperada} · Recibido: {p.cantReal}
-                </div>
+            {(ultima.productos||[]).filter(p=>p.estado==="diferencia").map(p => (
+              <div key={p.id} style={{ padding:"8px 0", borderBottom:`1px solid ${C.bord}`, fontSize:"12px" }}>
+                <div style={{ fontWeight:600 }}>{p.descripcion}</div>
+                <div style={{ color:C.orange }}>Esperado: {p.cantEsperada} · Recibido: {p.cantReal}</div>
               </div>
             ))}
           </div>
         )}
-
-        <button
-          style={btn({
-            background: C.accent,
-            color: "#fff",
-            fontWeight: 700,
-            width: "100%",
-            fontSize: "14px",
-            padding: "14px",
-          })}
-          onClick={() => setTab("carga")}
-        >
+        <button style={btn({ background:C.accent, color:"#fff", fontWeight:700, width:"100%", fontSize:"14px", padding:"14px" })} onClick={() => setTab("carga")}>
           + Nueva recepción
         </button>
       </div>
     );
   }
 
-  // Fallback
+  return <div style={BS}><div style={{ textAlign:"center", color:C.muted, padding:"40px" }}><button style={btn({ background:C.accent, color:"#fff" })} onClick={() => setTab("carga")}>→ Ir a carga</button></div></div>;
+}
+function ModStock({ toast, operarios }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState("lista"); // lista | agregar | alertas
+  const [maestro, setMaestro] = useState([]);
+  const [scanActivo, setScanActivo] = useState(false);
+  const [scanBuffer, setScanBuffer] = useState("");
+  const bufferRef = useRef("");
+  const timerRef = useRef(null);
+
+  // Form nuevo item
+  const [fCodigo, setFCodigo] = useState("");
+  const [fDesc, setFDesc] = useState("");
+  const [fEAN, setFEAN] = useState("");
+  const [fLote, setFLote] = useState("");
+  const [fVenc, setFVenc] = useState("");
+  const [fCant, setFCant] = useState("");
+  const [fUbic, setFUbic] = useState("");
+  const [fOperario, setFOperario] = useState("");
+  const [filtroEstado, setFiltroEstado] = useState("todos");
+
+  useEffect(() => {
+    cargarDatos();
+  }, []);
+
+  async function cargarDatos() {
+    setLoading(true);
+    try {
+      const [rStock, rMaestro] = await Promise.all([
+        fetch(`${APPS_SCRIPT_URL}?accion=leer_stock`).then(r=>r.json()),
+        fetch(`${APPS_SCRIPT_URL}?accion=leer_maestro`).then(r=>r.json()),
+      ]);
+      if (rStock.status === "ok") setItems(rStock.items || []);
+      if (rMaestro.status === "ok") setMaestro(rMaestro.articulos || []);
+    } catch { toast("⚠️ Error al cargar stock", "error"); }
+    finally { setLoading(false); }
+  }
+
+  // ── Escáner para agregar stock ────────────────────────────
+  useEffect(() => {
+    if (tab !== "agregar") return;
+    function onKey(e) {
+      if (!scanActivo) return;
+      if (e.key === "Enter") {
+        const ean = bufferRef.current.trim();
+        bufferRef.current = ""; setScanBuffer("");
+        clearTimeout(timerRef.current);
+        if (ean.length >= 7) buscarPorEAN(ean);
+      } else if (e.key.length === 1) {
+        bufferRef.current += e.key;
+        setScanBuffer(bufferRef.current);
+        clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+          const ean = bufferRef.current.trim();
+          bufferRef.current = ""; setScanBuffer("");
+          if (ean.length >= 7) buscarPorEAN(ean);
+        }, 200);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tab, scanActivo, maestro]);
+
+  function buscarPorEAN(ean) {
+    const art = maestro.find(a =>
+      a.ean_bulto === ean || a.ean_display === ean || a.ean_unidad === ean
+    );
+    if (art) {
+      setFCodigo(art.codigo);
+      setFDesc(art.descripcion);
+      setFEAN(ean);
+      toast(`✅ ${art.descripcion.slice(0,35)}`);
+    } else {
+      setFEAN(ean);
+      toast(`⚠️ EAN ${ean} no está en el maestro`, "error");
+    }
+  }
+
+  function calcEstado(venc) {
+    if (!venc) return { l:"Sin fecha", c:C.muted };
+    try {
+      const hoy = new Date(); hoy.setHours(0,0,0,0);
+      const f = new Date(venc);
+      const diff = Math.round((f - hoy) / 86400000);
+      if (diff < 0) return { l:"VENCIDO", c:C.red };
+      if (diff < 30) return { l:`CRÍTICO · ${diff}d`, c:C.orange };
+      if (diff < 90) return { l:`ALERTA · ${diff}d`, c:C.yellow };
+      return { l:`OK · ${diff}d`, c:C.green };
+    } catch { return { l:"Sin fecha", c:C.muted }; }
+  }
+
+  async function guardarItem() {
+    if (!fCodigo || !fCant || !fVenc) {
+      toast("⚠️ Completá código, cantidad y vencimiento", "error");
+      return;
+    }
+    const item = {
+      codigo: fCodigo, descripcion: fDesc, ean: fEAN,
+      lote: fLote, vencimiento: fVenc, cantidad: parseInt(fCant)||0,
+      ubicacion: fUbic, operario: fOperario,
+    };
+    try {
+      await api.post("guardar_stock", { items: [item] });
+      toast("✅ Stock guardado");
+      setFCodigo(""); setFDesc(""); setFEAN(""); setFLote("");
+      setFVenc(""); setFCant(""); setFUbic("");
+      cargarDatos();
+      setTab("lista");
+    } catch { toast("❌ Error al guardar", "error"); }
+  }
+
+  const vencidos  = items.filter(i => calcEstado(i.vencimiento).l === "VENCIDO");
+  const criticos  = items.filter(i => calcEstado(i.vencimiento).l.startsWith("CRÍTICO"));
+  const alertas   = items.filter(i => calcEstado(i.vencimiento).l.startsWith("ALERTA"));
+
+  const itemsFiltrados = filtroEstado === "todos" ? items
+    : filtroEstado === "vencidos" ? vencidos
+    : filtroEstado === "criticos" ? criticos
+    : filtroEstado === "alertas"  ? alertas
+    : items;
+
   return (
     <div style={BS}>
-      <div style={{ textAlign: "center", color: C.muted, padding: "40px" }}>
-        Cargá un CSV de despacho para empezar.
-        <br />
-        <button
-          style={btn({
-            background: C.accent,
-            color: "#fff",
-            marginTop: "12px",
-          })}
-          onClick={() => setTab("carga")}
-        >
-          → Ir a carga
-        </button>
+      {/* Tabs */}
+      <div style={{ display:"flex", gap:"6px" }}>
+        {[["lista","📋 Stock"],["agregar","➕ Agregar"],["alertas","🚨 Alertas"]].map(([id,label]) => (
+          <button key={id} style={btn({ background:tab===id?C.accent:"transparent", color:tab===id?"#fff":C.muted, border:`1px solid ${tab===id?C.accent:C.bord}`, flex:1, fontSize:"12px", padding:"8px" })}
+            onClick={() => setTab(id)}>{label}</button>
+        ))}
       </div>
+
+      {/* ── TAB ALERTAS ── */}
+      {tab === "alertas" && (
+        <>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"8px" }}>
+            {[[vencidos.length,"VENCIDOS",C.red],[criticos.length,"CRÍTICOS",C.orange],[alertas.length,"ALERTAS",C.yellow]].map(([v,l,c]) => (
+              <div key={l} style={card({ padding:"12px", textAlign:"center", borderColor:c })}>
+                <div style={{ fontSize:"28px", fontWeight:900, color:c }}>{v}</div>
+                <div style={{ fontSize:"9px", color:C.muted }}>{l}</div>
+              </div>
+            ))}
+          </div>
+          {vencidos.length > 0 && (
+            <div style={card({ borderColor:C.red })}>
+              <div style={{ ...secTit, color:C.red }}>🚨 VENCIDOS</div>
+              {vencidos.map((item,i) => (
+                <div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${C.bord}`, fontSize:"12px" }}>
+                  <div style={{ fontWeight:700 }}>{item.descripcion||item.codigo}</div>
+                  <div style={{ color:C.red }}>Vence: {item.vencimiento} · {item.cantidad} u · {item.ubicacion||"—"}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {criticos.length > 0 && (
+            <div style={card({ borderColor:C.orange })}>
+              <div style={{ ...secTit, color:C.orange }}>⚠️ CRÍTICOS (menos de 30 días)</div>
+              {criticos.map((item,i) => (
+                <div key={i} style={{ padding:"8px 0", borderBottom:`1px solid ${C.bord}`, fontSize:"12px" }}>
+                  <div style={{ fontWeight:700 }}>{item.descripcion||item.codigo}</div>
+                  <div style={{ color:C.orange }}>Vence: {item.vencimiento} · {item.cantidad} u · {item.ubicacion||"—"}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── TAB AGREGAR ── */}
+      {tab === "agregar" && (
+        <div style={card({ borderColor:C.accent })}>
+          <div style={secTit}>➕ REGISTRAR STOCK</div>
+
+          {/* Escáner */}
+          <button
+            style={btn({ background:scanActivo?`linear-gradient(135deg,${C.green},#059669)`:`linear-gradient(135deg,${C.accent},#5b21b6)`, color:scanActivo?"#0a0c10":"#fff", width:"100%", marginBottom:"12px", fontWeight:700 })}
+            onClick={() => { setScanActivo(v=>!v); bufferRef.current=""; setScanBuffer(""); }}
+          >
+            {scanActivo ? `🔫 ESCÁNER ACTIVO · ${scanBuffer||"Esperando..."}` : "🔫 Escanear producto"}
+          </button>
+
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"8px" }}>
+            <div>
+              <label style={lbl}>Código *</label>
+              <input style={inp} value={fCodigo} onChange={e=>setFCodigo(e.target.value)} placeholder="14361" />
+            </div>
+            <div>
+              <label style={lbl}>EAN</label>
+              <input style={inp} value={fEAN} onChange={e=>setFEAN(e.target.value)} placeholder="7790580..." />
+            </div>
+          </div>
+
+          <label style={lbl}>Descripción</label>
+          <input style={{ ...inp, marginBottom:"8px" }} value={fDesc} onChange={e=>setFDesc(e.target.value)} placeholder="Nombre del producto" />
+
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"8px" }}>
+            <div>
+              <label style={lbl}>Cantidad *</label>
+              <input type="number" inputMode="numeric" style={inp} value={fCant} onChange={e=>setFCant(e.target.value)} placeholder="0" />
+            </div>
+            <div>
+              <label style={lbl}>Ubicación</label>
+              <input style={inp} value={fUbic} onChange={e=>setFUbic(e.target.value)} placeholder="Estante A3" />
+            </div>
+          </div>
+
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"8px" }}>
+            <div>
+              <label style={lbl}>Lote</label>
+              <input style={inp} value={fLote} onChange={e=>setFLote(e.target.value)} placeholder="L240420" />
+            </div>
+            <div>
+              <label style={lbl}>Vencimiento *</label>
+              <input
+                type="text" inputMode="numeric" placeholder="MM/AAAA" maxLength={7}
+                style={{ ...inp, letterSpacing:"3px" }}
+                value={fVenc}
+                onChange={e => {
+                  let v = e.target.value.replace(/\D/g,"");
+                  if (v.length > 2) v = v.slice(0,2)+"/"+v.slice(2,6);
+                  setFVenc(v);
+                }}
+              />
+            </div>
+          </div>
+
+          <label style={lbl}>Operario</label>
+          <select style={{ ...inp, marginBottom:"12px" }} value={fOperario} onChange={e=>setFOperario(e.target.value)}>
+            <option value="">— Seleccionar —</option>
+            {operarios.map(op => <option key={op.id} value={op.nombre}>{op.nombre}</option>)}
+          </select>
+
+          <button style={btn({ background:`linear-gradient(135deg,${C.green},#059669)`, color:"#0a0c10", fontWeight:700, width:"100%", fontSize:"14px", padding:"14px" })} onClick={guardarItem}>
+            ✓ GUARDAR EN STOCK
+          </button>
+        </div>
+      )}
+
+      {/* ── TAB LISTA ── */}
+      {tab === "lista" && (
+        <>
+          <div style={{ display:"flex", gap:"6px", flexWrap:"wrap" }}>
+            {[["todos","Todos"],["vencidos","🚨 Vencidos"],["criticos","⚠️ Críticos"],["alertas","🔔 Alertas"]].map(([id,label]) => (
+              <button key={id} style={btn({ background:filtroEstado===id?C.surf2:"transparent", color:filtroEstado===id?C.text:C.muted, border:`1px solid ${filtroEstado===id?C.blue:C.bord}`, fontSize:"11px", padding:"5px 10px" })}
+                onClick={() => setFiltroEstado(id)}>{label}</button>
+            ))}
+            <button style={btn({ background:"transparent", color:C.blue, border:`1px solid ${C.bord}`, fontSize:"11px", padding:"5px 10px", marginLeft:"auto" })} onClick={cargarDatos}>🔄</button>
+          </div>
+
+          {loading && <div style={{ textAlign:"center", color:C.muted, padding:"20px" }}>Cargando...</div>}
+
+          {!loading && itemsFiltrados.length === 0 && (
+            <div style={{ textAlign:"center", color:C.muted, padding:"40px" }}>Sin productos registrados.</div>
+          )}
+
+          {itemsFiltrados.map((item, i) => {
+            const est = calcEstado(item.vencimiento);
+            return (
+              <div key={i} style={card({ borderLeft:`3px solid ${est.c}` })}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontWeight:700, fontSize:"13px" }}>{item.descripcion || item.codigo}</div>
+                    <div style={{ fontSize:"10px", color:C.muted, marginTop:"2px" }}>
+                      Cód: {item.codigo} {item.lote ? `· Lote: ${item.lote}` : ""} {item.ubicacion ? `· 📍 ${item.ubicacion}` : ""}
+                    </div>
+                    <div style={{ marginTop:"4px", display:"flex", gap:"6px", flexWrap:"wrap" }}>
+                      <span style={pill(est.c)}>{est.l}</span>
+                      {item.vencimiento && <span style={{ fontSize:"10px", color:C.muted }}>Vence: {item.vencimiento}</span>}
+                    </div>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0, marginLeft:"8px" }}>
+                    <div style={{ fontSize:"22px", fontWeight:900, color:est.c }}>{item.cantidad}</div>
+                    <div style={{ fontSize:"9px", color:C.muted }}>unidades</div>
+                  </div>
+                </div>
+                {item.operario && (
+                  <div style={{ fontSize:"10px", color:C.muted, marginTop:"4px" }}>👷 {item.operario} · {item.fechaRegistro}</div>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
     </div>
   );
 }
-
 // ═══════════════════════════════════════════════════════════════
 // MÓDULO ARMADO — Carga XLS + número automático + imprimir
 // ═══════════════════════════════════════════════════════════════
@@ -6752,7 +6168,7 @@ export default function App() {
       { id:"armado",    icon:"📱", label:"Armado",     color:C.accent,  desc:"Pickear consolidados" },
       { id:"control",   icon:"🔍", label:"Control",    color:C.blue,    desc:"Verificar pedidos" },
       { id:"recepcion", icon:"📦", label:"Recepción",  color:C.green,   desc:"Recibir mercadería" },
-      { id:"stock",     icon:"🏭", label:"Stock",      color:C.orange,  desc:"Próximamente", disabled:true },
+      { id:"stock", icon:"🏭", label:"Stock", color:C.orange, desc:"Conteo e inventario", disabled:false },
       { id:"operarios", icon:"👷", label:"Operarios",  color:C.gold,    desc:"Gestionar equipo" },
       { id:"metricas",  icon:"📊", label:"Métricas",   color:C.red,     desc:"Ver rendimiento" },
     ];
@@ -6842,6 +6258,7 @@ export default function App() {
 
       {tab === "armado" && <ModArmado toast={showToast} operarios={operarios} cons={cons} setCons={setCons} usuarioActivo={usuarioActivo} />}
       {tab === "control" && <ModControl toast={showToast} operarios={operarios} cons={cons} setCons={setCons} sincronizar={sincronizar} usuarioActivo={usuarioActivo} />}
+      {tab === "stock" && <ModStock toast={showToast} operarios={operarios} />}
       {tab === "recepcion" && <ModRecepcion toast={showToast} operarios={operarios} />}
       {tab === "operarios" && <ModOperarios operarios={operarios} setOperarios={setOperarios} toast={showToast} />}
       {tab === "metricas" && <ModMetricas toast={showToast} cons={cons} prods={prods} />}
