@@ -338,7 +338,8 @@ function parseXLS(text) {
   for (let i = 0; i < lines.length; i++) {
     const row = lines[i];
     if (!row || !row[0]) continue;
-    const first = row[0];
+    const first = (row[0] || "").trim();
+    if (first && first.includes("COMBO")) console.log("COMBO encontrado:", JSON.stringify(row));
 
     if (i === 0) {
       if (
@@ -370,11 +371,13 @@ function parseXLS(text) {
     const isDiv =
       first.startsWith("DIV") ||
       first.startsWith("CHOCOLATES") ||
-      first.startsWith("COMESTIBLES");
+      first.startsWith("COMESTIBLES") ||
+      first.startsWith("COMBO");
     const isNamed =
       first.includes("ARCOR") ||
       first.includes("BAGLEY") ||
-      first.includes("CAMPAGNOLA");
+      first.includes("CAMPAGNOLA") ||
+      first.includes("PASCUA");
     if ((isDiv || isNamed) && sinCol1) {
       if (current) sections.push(current);
       current = { name: first, products: [], total_bu: "0" };
@@ -399,7 +402,7 @@ function parseXLS(text) {
     );
     // REEMPLAZAR este bloque en parseXLS (desde "if (current && codigoLimpio" hasta "});")
 
-    if (current && codigoLimpio && /^\d+$/.test(codigoLimpio) && row[2]) {
+    if (current && codigoLimpio && /^[A-Za-z0-9]+$/.test(codigoLimpio) && row[2]) {
       const buQty = parseFloat(row[5] || "0") || 0; // col F — cantidad BU
       const venQty = parseFloat(row[7] || "0") || 0; // col H — cantidad venta (UN sueltas)
       const venUnit = row[8] || row[4] || "UN"; // col I — unidad de venta
@@ -2924,66 +2927,6 @@ function ModRecepcion({ toast, operarios }) {
     );
   }
 
-  function procesarEAN(ean) {
-    if (!despacho) return;
-    const prods = despacho.productos || [];
-    const eanStr = String(ean).trim();
-  
-    console.log("🔍 Buscando EAN:", eanStr);
-    console.log("📋 Maestro cargado:", maestro.length, "artículos");
-  
-    // 1. Buscar directo por EAN en el CSV del despacho
-    let idx = prods.findIndex(p => String(p.ean || "").trim() === eanStr);
-    console.log("1. Match directo CSV:", idx);
-  
-    // 2. Buscar en maestro por EAN y cruzar por código con el despacho
-    if (idx === -1) {
-      const artMaestro = buscarEnMaestro(eanStr);
-      console.log("2. Match maestro:", artMaestro?.descripcion, "cod:", artMaestro?.codigo);
-      if (artMaestro) {
-        const codMaestro = String(artMaestro.codigo || "").trim();
-        idx = prods.findIndex(p => String(p.codigo || "").trim() === codMaestro);
-        console.log("2b. Match por código:", idx, "buscando código:", codMaestro);
-      }
-    }
-  
-    // 3. Fallback: EAN contiene el código del producto
-    if (idx === -1) {
-      idx = prods.findIndex(p => p.codigo && eanStr.includes(String(p.codigo).trim()));
-      console.log("3. Match fallback includes:", idx);
-    }
-  
-    if (idx !== -1) {
-      setModalProd({ idx, prod: prods[idx] });
-      setModalCant(String(prods[idx].cantReal ?? prods[idx].cantEsperada ?? ""));
-      setModalVenc(prods[idx].vencimiento || "");
-      setUltimoScan({ prod: prods[idx], idx });
-      toast(`📦 ${prods[idx].descripcion.slice(0,35)}...`);
-    } else {
-      toast(`⚠️ EAN ${eanStr} no encontrado`, "error");
-      setUltimoScan({ prod: null, ean: eanStr });
-      console.log("❌ No encontrado. Productos en despacho:", prods.map(p => `${p.codigo}|${p.ean}`));
-    }
-  }
-
-  function confirmarModal(cantReal, vencimiento) {
-    window._recepEditando = false;
-    if (!despacho || modalProd === null) return;
-    const prods = [...despacho.productos];
-    const { idx } = modalProd;
-    const prod = prods[idx];
-    const cant = parseInt(cantReal) || 0;
-    const estado = cant === 0 ? "pendiente" : cant === prod.cantEsperada ? "ok" : "diferencia";
-    prods[idx] = { ...prod, cantReal: cant, vencimiento: vencimiento || prod.vencimiento || "", estado, escaneado: true, _ts: Date.now() };
-    const actualizado = { ...despacho, productos: prods };
-    guardarDespacho(actualizado);
-    setModalProd(null);
-    clearTimeout(window._recepTimer);
-    window._recepTimer = setTimeout(() => {
-      api.post("recepcion_despacho", { info: actualizado.info, operario, productos: actualizado.productos, timestamp: new Date().toISOString() });
-    }, 1500);
-  }
-
   function setCantidad(idx, valor) {
     if (!despacho) return;
     window._recepEditando = true; // ← AGREGAR
@@ -3331,27 +3274,23 @@ function ModRecepcion({ toast, operarios }) {
 function ModStock({ toast, operarios }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState("lista"); // lista | agregar | alertas
+  const [tab, setTab] = useState("lista");
   const [maestro, setMaestro] = useState([]);
   const [scanActivo, setScanActivo] = useState(false);
   const [scanBuffer, setScanBuffer] = useState("");
   const bufferRef = useRef("");
   const timerRef = useRef(null);
-
-  // Form nuevo item
-  const [fCodigo, setFCodigo] = useState("");
-  const [fDesc, setFDesc] = useState("");
-  const [fEAN, setFEAN] = useState("");
-  const [fLote, setFLote] = useState("");
-  const [fVenc, setFVenc] = useState("");
-  const [fCant, setFCant] = useState("");
-  const [fUbic, setFUbic] = useState("");
   const [fOperario, setFOperario] = useState("");
   const [filtroEstado, setFiltroEstado] = useState("todos");
+  const [modalStock, setModalStock] = useState(null); // { codigo, descripcion, cantSistema, unidad }
+  const [modalStockCant, setModalStockCant] = useState("");
 
-  useEffect(() => {
-    cargarDatos();
-  }, []);
+  // ── Inventario cargado desde XLS ─────────────────────────
+  const [inventario, setInventario] = useState([]); // base del XLS
+  const [conteo, setConteo] = useState({});          // { codigo: cantContada }
+  const [invFileName, setInvFileName] = useState("");
+
+  useEffect(() => { cargarDatos(); }, []);
 
   async function cargarDatos() {
     setLoading(true);
@@ -3366,16 +3305,47 @@ function ModStock({ toast, operarios }) {
     finally { setLoading(false); }
   }
 
-  // ── Escáner para agregar stock ────────────────────────────
+  // ── Cargar XLS de inventario ──────────────────────────────
+  function handleInvXLS(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setInvFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = new Uint8Array(ev.target.result);
+        const wb = XLSX.read(data, { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+        const parsed = rows
+          .filter(r => r[0] && /^\d+/.test(String(r[0])))
+          .map(r => ({
+            codigo:      String(r[0]).trim(),
+            descripcion: String(r[1] || "").trim(),
+            unidad:      String(r[2] || "UN").trim(),
+            cantSistema: parseFloat(r[3]) || 0,
+          }));
+        setInventario(parsed);
+        setConteo({});
+        toast(`✅ ${parsed.length} productos cargados · ${file.name}`);
+        setTab("conteo");
+      } catch(err) {
+        toast("❌ Error al leer el XLS", "error");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // ── Escáner para conteo ───────────────────────────────────
   useEffect(() => {
-    if (tab !== "agregar") return;
+    if (tab !== "conteo") return;
     function onKey(e) {
       if (!scanActivo) return;
       if (e.key === "Enter") {
         const ean = bufferRef.current.trim();
         bufferRef.current = ""; setScanBuffer("");
         clearTimeout(timerRef.current);
-        if (ean.length >= 7) buscarPorEAN(ean);
+        if (ean.length >= 4) procesarEANStock(ean);
       } else if (e.key.length === 1) {
         bufferRef.current += e.key;
         setScanBuffer(bufferRef.current);
@@ -3383,27 +3353,72 @@ function ModStock({ toast, operarios }) {
         timerRef.current = setTimeout(() => {
           const ean = bufferRef.current.trim();
           bufferRef.current = ""; setScanBuffer("");
-          if (ean.length >= 7) buscarPorEAN(ean);
+          if (ean.length >= 4) procesarEANStock(ean);
         }, 200);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [tab, scanActivo, maestro]);
-
-  function buscarPorEAN(ean) {
-    const art = maestro.find(a =>
-      a.ean_bulto === ean || a.ean_display === ean || a.ean_unidad === ean
+  }, [tab, scanActivo, inventario, maestro, conteo]);
+  function procesarEANStock(ean) {
+    const eanStr = String(ean).trim();
+    let art = maestro.find(a =>
+      String(a.ean_bulto||"").trim() === eanStr ||
+      String(a.ean_display||"").trim() === eanStr ||
+      String(a.ean_unidad||"").trim() === eanStr
     );
-    if (art) {
-      setFCodigo(art.codigo);
-      setFDesc(art.descripcion);
-      setFEAN(ean);
-      toast(`✅ ${art.descripcion.slice(0,35)}`);
-    } else {
-      setFEAN(ean);
-      toast(`⚠️ EAN ${ean} no está en el maestro`, "error");
+    if (!art) art = maestro.find(a => String(a.codigo||"").trim() === eanStr);
+    if (!art) art = maestro.find(a => eanStr.endsWith(String(a.codigo||"").trim()));
+    if (!art) {
+      const inv = inventario.find(p => eanStr.endsWith(p.codigo) || p.codigo === eanStr);
+      if (inv) { abrirModalStock(inv); return; }
+      toast(`⚠️ EAN ${eanStr} no encontrado`, "error");
+      return;
     }
+    const codMaestro = String(art.codigo).trim();
+    const inv = inventario.find(p => p.codigo === codMaestro || p.codigo.endsWith(codMaestro));
+    abrirModalStock(inv || { codigo: codMaestro, descripcion: art.descripcion, cantSistema: 0, unidad: art.unidad_bulto || "UN" });
+  }
+
+  function abrirModalStock(prod) {
+    setModalStock(prod);
+    setModalStockCant(String(conteo[prod.codigo] ?? ""));
+  }
+
+  function confirmarModalStock() {
+    if (!modalStock) return;
+    const cant = parseInt(modalStockCant);
+    if (isNaN(cant) || cant < 0) { toast("⚠️ Cantidad inválida", "error"); return; }
+    setConteo(prev => ({ ...prev, [modalStock.codigo]: cant }));
+    toast(`✅ ${modalStock.descripcion.slice(0,30)} · ${cant} ${modalStock.unidad}`);
+    setModalStock(null);
+    setModalStockCant("");
+  }
+  
+
+  function ajustarConteo(codigo, valor) {
+    const v = parseInt(valor);
+    if (isNaN(v) || v < 0) return;
+    setConteo(prev => ({ ...prev, [codigo]: v }));
+  }
+
+  async function enviarInventario() {
+    if (!fOperario) { toast("⚠️ Seleccioná el operario", "error"); return; }
+    if (inventario.length === 0) { toast("⚠️ Cargá el XLS primero", "error"); return; }
+    const items = inventario.map(p => ({
+      codigo: p.codigo,
+      descripcion: p.descripcion,
+      unidad: p.unidad,
+      cantSistema: p.cantSistema,
+      cantContada: conteo[p.codigo] !== undefined ? conteo[p.codigo] : null,
+      diferencia: conteo[p.codigo] !== undefined ? conteo[p.codigo] - p.cantSistema : null,
+      operario: fOperario,
+      fecha: todayStr(),
+    }));
+    try {
+      await api.post("guardar_inventario", { items, operario: fOperario, fecha: todayStr() });
+      toast(`✅ Inventario enviado · ${items.length} productos`);
+    } catch { toast("❌ Error al enviar", "error"); }
   }
 
   function calcEstado(venc) {
@@ -3419,45 +3434,169 @@ function ModStock({ toast, operarios }) {
     } catch { return { l:"Sin fecha", c:C.muted }; }
   }
 
-  async function guardarItem() {
-    if (!fCodigo || !fCant || !fVenc) {
-      toast("⚠️ Completá código, cantidad y vencimiento", "error");
-      return;
-    }
-    const item = {
-      codigo: fCodigo, descripcion: fDesc, ean: fEAN,
-      lote: fLote, vencimiento: fVenc, cantidad: parseInt(fCant)||0,
-      ubicacion: fUbic, operario: fOperario,
-    };
-    try {
-      await api.post("guardar_stock", { items: [item] });
-      toast("✅ Stock guardado");
-      setFCodigo(""); setFDesc(""); setFEAN(""); setFLote("");
-      setFVenc(""); setFCant(""); setFUbic("");
-      cargarDatos();
-      setTab("lista");
-    } catch { toast("❌ Error al guardar", "error"); }
-  }
+  const vencidos = items.filter(i => calcEstado(i.vencimiento).l === "VENCIDO");
+  const criticos = items.filter(i => calcEstado(i.vencimiento).l.startsWith("CRÍTICO"));
+  const alertas  = items.filter(i => calcEstado(i.vencimiento).l.startsWith("ALERTA"));
 
-  const vencidos  = items.filter(i => calcEstado(i.vencimiento).l === "VENCIDO");
-  const criticos  = items.filter(i => calcEstado(i.vencimiento).l.startsWith("CRÍTICO"));
-  const alertas   = items.filter(i => calcEstado(i.vencimiento).l.startsWith("ALERTA"));
-
-  const itemsFiltrados = filtroEstado === "todos" ? items
-    : filtroEstado === "vencidos" ? vencidos
-    : filtroEstado === "criticos" ? criticos
-    : filtroEstado === "alertas"  ? alertas
-    : items;
+  // ── Conteo: cuántos productos ya fueron escaneados ────────
+  const contados = inventario.filter(p => conteo[p.codigo] !== undefined).length;
+  const total    = inventario.length;
+  const pct      = total > 0 ? Math.round((contados / total) * 100) : 0;
 
   return (
     <div style={BS}>
+
+      {modalStock && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.88)", zIndex:2000, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+          <div style={{ ...card({ borderColor:C.accent }), width:"100%", maxWidth:"500px", borderRadius:"16px 16px 0 0", padding:"20px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"8px" }}>
+              <div style={{ fontWeight:700, fontSize:"15px" }}>📦 {modalStock.descripcion.slice(0,40)}</div>
+              <button style={btn({ background:C.surf2, color:C.muted, padding:"4px 10px", fontSize:"12px" })} onClick={() => setModalStock(null)}>✕</button>
+            </div>
+            <div style={{ background:C.surf2, borderRadius:"8px", padding:"10px", marginBottom:"16px", fontSize:"11px", color:C.muted }}>
+              Cód: {modalStock.codigo} · Sistema: <strong style={{ color:C.text }}>{modalStock.cantSistema} {modalStock.unidad}</strong>
+              {conteo[modalStock.codigo] !== undefined && <span style={{ color:C.blue, marginLeft:"8px" }}>· Anterior: {conteo[modalStock.codigo]}</span>}
+            </div>
+            <label style={lbl}>Cantidad contada</label>
+            <input
+              type="number" inputMode="numeric"
+              style={{ ...inp, fontSize:"48px", fontWeight:900, textAlign:"center", padding:"16px", marginBottom:"10px",
+                borderColor: parseInt(modalStockCant) === modalStock.cantSistema ? C.green
+                           : parseInt(modalStockCant) < modalStock.cantSistema ? C.red : C.blue }}
+              value={modalStockCant}
+              onChange={e => setModalStockCant(e.target.value)}
+              autoFocus
+            />
+            {modalStockCant !== "" && parseInt(modalStockCant) !== modalStock.cantSistema && (
+              <div style={{ textAlign:"center", fontSize:"14px", fontWeight:700, marginBottom:"12px",
+                color: parseInt(modalStockCant) < modalStock.cantSistema ? C.red : C.blue }}>
+                {parseInt(modalStockCant) - modalStock.cantSistema > 0
+                  ? `+${parseInt(modalStockCant) - modalStock.cantSistema} sobrante`
+                  : `${parseInt(modalStockCant) - modalStock.cantSistema} faltante`}
+              </div>
+            )}
+            <div style={{ display:"flex", gap:"8px" }}>
+              <button style={btn({ background:C.surf2, color:C.muted, border:`1px solid ${C.bord}`, flex:1 })} onClick={() => setModalStock(null)}>Cancelar</button>
+              <button
+                style={btn({ background: parseInt(modalStockCant)===modalStock.cantSistema ? `linear-gradient(135deg,${C.green},#059669)` : `linear-gradient(135deg,${C.accent},#5b21b6)`,
+                  color: parseInt(modalStockCant)===modalStock.cantSistema ? "#0a0c10" : "#fff", fontWeight:700, flex:2, fontSize:"15px" })}
+                disabled={modalStockCant === ""}
+                onClick={confirmarModalStock}
+              >✓ Confirmar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <div style={{ display:"flex", gap:"6px" }}>
-        {[["lista","📋 Stock"],["agregar","➕ Agregar"],["alertas","🚨 Alertas"]].map(([id,label]) => (
-          <button key={id} style={btn({ background:tab===id?C.accent:"transparent", color:tab===id?"#fff":C.muted, border:`1px solid ${tab===id?C.accent:C.bord}`, flex:1, fontSize:"12px", padding:"8px" })}
+        {[
+          ["lista",  "📋 Stock"],
+          ["conteo", "🔢 Inventario"],
+          ["alertas","🚨 Alertas"],
+        ].map(([id, label]) => (
+          <button key={id}
+            style={btn({ background:tab===id?C.accent:"transparent", color:tab===id?"#fff":C.muted, border:`1px solid ${tab===id?C.accent:C.bord}`, flex:1, fontSize:"12px", padding:"8px" })}
             onClick={() => setTab(id)}>{label}</button>
         ))}
       </div>
+
+      {/* ── TAB INVENTARIO ── */}
+      {tab === "conteo" && (
+        <>
+          {/* Cargar XLS */}
+          <div style={card()}>
+            <div style={secTit}>📂 CARGAR PLANILLA DE INVENTARIO</div>
+            <label style={{ ...btn({ background:`linear-gradient(135deg,${C.accent},#5b21b6)`, color:"#fff", width:"100%", fontSize:"13px", padding:"12px" }), cursor:"pointer", marginBottom:"8px" }}>
+              📂 {invFileName || "Seleccionar XLS / XLSX"}
+              <input type="file" accept=".xls,.xlsx" style={{ display:"none" }} onChange={handleInvXLS} />
+            </label>
+            {inventario.length > 0 && (
+              <div style={{ fontSize:"11px", color:C.muted }}>
+                {inventario.length} productos · {contados} contados · {total - contados} pendientes
+              </div>
+            )}
+          </div>
+
+          {inventario.length > 0 && (
+            <>
+              {/* Progreso + escáner */}
+              <div style={card({ padding:"12px 14px" })}>
+                <div style={{ display:"flex", justifyContent:"space-between", fontSize:"11px", color:C.muted, marginBottom:"4px" }}>
+                  <span>Progreso</span>
+                  <span style={{ fontWeight:700, color:pct===100?C.green:C.text }}>{contados}/{total}</span>
+                </div>
+                <div style={{ height:"6px", background:C.bord, borderRadius:"3px", marginBottom:"10px" }}>
+                  <div style={{ height:"100%", width:`${pct}%`, background:pct===100?C.green:`linear-gradient(90deg,${C.accent},${C.blue})`, borderRadius:"3px", transition:"width .3s" }} />
+                </div>
+
+                <label style={lbl}>Operario</label>
+                <select style={{ ...inp, marginBottom:"10px" }} value={fOperario} onChange={e=>setFOperario(e.target.value)}>
+                  <option value="">— Seleccionar —</option>
+                  {operarios.map(op => <option key={op.id} value={op.nombre}>{op.nombre}</option>)}
+                </select>
+
+                <button
+                  style={btn({ background:scanActivo?`linear-gradient(135deg,${C.green},#059669)`:`linear-gradient(135deg,${C.accent},#5b21b6)`, color:scanActivo?"#0a0c10":"#fff", width:"100%", fontWeight:700, fontSize:"14px", padding:"12px" })}
+                  onClick={() => { setScanActivo(v=>!v); bufferRef.current=""; setScanBuffer(""); }}
+                >
+                  {scanActivo ? `🔫 ESCÁNER ACTIVO · ${scanBuffer||"Esperando..."}` : "🔫 Activar escáner Bluetooth"}
+                </button>
+              </div>
+
+              {/* Lista de productos */}
+              {inventario.map(p => {
+                const cant = conteo[p.codigo];
+                const contado = cant !== undefined;
+                const diff = contado ? cant - p.cantSistema : null;
+                const borderColor = !contado ? C.bord : diff === 0 ? C.green : diff > 0 ? C.blue : C.red;
+                return (
+                  <div key={p.codigo} style={{ ...card({ padding:"11px 14px" }), borderLeft:`3px solid ${borderColor}`, cursor:"pointer" }}
+  onClick={() => abrirModalStock(p)}>
+                    <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontWeight:600, fontSize:"13px", color: contado ? C.text : C.muted }}>{p.descripcion}</div>
+                        <div style={{ fontSize:"10px", color:C.muted, marginTop:"2px" }}>
+                          Cód: {p.codigo} · Sistema: <strong style={{ color:C.text }}>{p.cantSistema} {p.unidad}</strong>
+                        </div>
+                        {diff !== null && diff !== 0 && (
+                          <div style={{ fontSize:"11px", fontWeight:700, color: diff > 0 ? C.blue : C.red, marginTop:"2px" }}>
+                            {diff > 0 ? `+${diff} sobrante` : `${diff} faltante`}
+                          </div>
+                        )}
+                      </div>
+                      <input
+                        type="number" inputMode="numeric"
+                        style={{ ...inp, width:"70px", textAlign:"center", fontSize:"20px", fontWeight:900,
+                          borderColor, color: contado ? (diff===0?C.green:diff>0?C.blue:C.red) : C.muted }}
+                        value={cant !== undefined ? cant : ""}
+                        placeholder="—"
+                        onChange={e => ajustarConteo(p.codigo, e.target.value)}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Enviar */}
+              <div style={card()}>
+                <div style={{ display:"flex", gap:"6px", marginBottom:"8px", fontSize:"11px", color:C.muted, flexWrap:"wrap" }}>
+                  <span style={pill(C.green)}>{inventario.filter(p=>conteo[p.codigo]!==undefined&&conteo[p.codigo]===p.cantSistema).length} OK</span>
+                  <span style={pill(C.red)}>{inventario.filter(p=>conteo[p.codigo]!==undefined&&conteo[p.codigo]<p.cantSistema).length} faltantes</span>
+                  <span style={pill(C.blue)}>{inventario.filter(p=>conteo[p.codigo]!==undefined&&conteo[p.codigo]>p.cantSistema).length} sobrantes</span>
+                  <span style={pill(C.muted)}>{inventario.filter(p=>conteo[p.codigo]===undefined).length} sin contar</span>
+                </div>
+                <button
+                  style={btn({ background:`linear-gradient(135deg,${C.green},#059669)`, color:"#0a0c10", fontWeight:700, width:"100%", fontSize:"14px", padding:"14px" })}
+                  onClick={enviarInventario}
+                >
+                  📤 ENVIAR INVENTARIO AL SHEET
+                </button>
+              </div>
+            </>
+          )}
+        </>
+      )}
 
       {/* ── TAB ALERTAS ── */}
       {tab === "alertas" && (
@@ -3495,76 +3634,6 @@ function ModStock({ toast, operarios }) {
         </>
       )}
 
-      {/* ── TAB AGREGAR ── */}
-      {tab === "agregar" && (
-        <div style={card({ borderColor:C.accent })}>
-          <div style={secTit}>➕ REGISTRAR STOCK</div>
-
-          {/* Escáner */}
-          <button
-            style={btn({ background:scanActivo?`linear-gradient(135deg,${C.green},#059669)`:`linear-gradient(135deg,${C.accent},#5b21b6)`, color:scanActivo?"#0a0c10":"#fff", width:"100%", marginBottom:"12px", fontWeight:700 })}
-            onClick={() => { setScanActivo(v=>!v); bufferRef.current=""; setScanBuffer(""); }}
-          >
-            {scanActivo ? `🔫 ESCÁNER ACTIVO · ${scanBuffer||"Esperando..."}` : "🔫 Escanear producto"}
-          </button>
-
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"8px" }}>
-            <div>
-              <label style={lbl}>Código *</label>
-              <input style={inp} value={fCodigo} onChange={e=>setFCodigo(e.target.value)} placeholder="14361" />
-            </div>
-            <div>
-              <label style={lbl}>EAN</label>
-              <input style={inp} value={fEAN} onChange={e=>setFEAN(e.target.value)} placeholder="7790580..." />
-            </div>
-          </div>
-
-          <label style={lbl}>Descripción</label>
-          <input style={{ ...inp, marginBottom:"8px" }} value={fDesc} onChange={e=>setFDesc(e.target.value)} placeholder="Nombre del producto" />
-
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"8px" }}>
-            <div>
-              <label style={lbl}>Cantidad *</label>
-              <input type="number" inputMode="numeric" style={inp} value={fCant} onChange={e=>setFCant(e.target.value)} placeholder="0" />
-            </div>
-            <div>
-              <label style={lbl}>Ubicación</label>
-              <input style={inp} value={fUbic} onChange={e=>setFUbic(e.target.value)} placeholder="Estante A3" />
-            </div>
-          </div>
-
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"8px" }}>
-            <div>
-              <label style={lbl}>Lote</label>
-              <input style={inp} value={fLote} onChange={e=>setFLote(e.target.value)} placeholder="L240420" />
-            </div>
-            <div>
-              <label style={lbl}>Vencimiento *</label>
-              <input
-                type="text" inputMode="numeric" placeholder="MM/AAAA" maxLength={7}
-                style={{ ...inp, letterSpacing:"3px" }}
-                value={fVenc}
-                onChange={e => {
-                  let v = e.target.value.replace(/\D/g,"");
-                  if (v.length > 2) v = v.slice(0,2)+"/"+v.slice(2,6);
-                  setFVenc(v);
-                }}
-              />
-            </div>
-          </div>
-
-          <label style={lbl}>Operario</label>
-          <select style={{ ...inp, marginBottom:"12px" }} value={fOperario} onChange={e=>setFOperario(e.target.value)}>
-            <option value="">— Seleccionar —</option>
-            {operarios.map(op => <option key={op.id} value={op.nombre}>{op.nombre}</option>)}
-          </select>
-
-          <button style={btn({ background:`linear-gradient(135deg,${C.green},#059669)`, color:"#0a0c10", fontWeight:700, width:"100%", fontSize:"14px", padding:"14px" })} onClick={guardarItem}>
-            ✓ GUARDAR EN STOCK
-          </button>
-        </div>
-      )}
-
       {/* ── TAB LISTA ── */}
       {tab === "lista" && (
         <>
@@ -3575,14 +3644,11 @@ function ModStock({ toast, operarios }) {
             ))}
             <button style={btn({ background:"transparent", color:C.blue, border:`1px solid ${C.bord}`, fontSize:"11px", padding:"5px 10px", marginLeft:"auto" })} onClick={cargarDatos}>🔄</button>
           </div>
-
           {loading && <div style={{ textAlign:"center", color:C.muted, padding:"20px" }}>Cargando...</div>}
-
-          {!loading && itemsFiltrados.length === 0 && (
+          {!loading && items.length === 0 && (
             <div style={{ textAlign:"center", color:C.muted, padding:"40px" }}>Sin productos registrados.</div>
           )}
-
-          {itemsFiltrados.map((item, i) => {
+          {(filtroEstado==="todos"?items:filtroEstado==="vencidos"?vencidos:filtroEstado==="criticos"?criticos:alertas).map((item, i) => {
             const est = calcEstado(item.vencimiento);
             return (
               <div key={i} style={card({ borderLeft:`3px solid ${est.c}` })}>
@@ -3602,9 +3668,6 @@ function ModStock({ toast, operarios }) {
                     <div style={{ fontSize:"9px", color:C.muted }}>unidades</div>
                   </div>
                 </div>
-                {item.operario && (
-                  <div style={{ fontSize:"10px", color:C.muted, marginTop:"4px" }}>👷 {item.operario} · {item.fechaRegistro}</div>
-                )}
               </div>
             );
           })}
@@ -5068,45 +5131,56 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
     : 0;
 
     function markLine(lid, estado, motivo = null) {
-      if (!ctrl && estado) {
-        toast("⚠️ Seleccioná el controlador primero", "error");
-        return;
-      }
-      setCons((cs) =>
-        cs.map((x) =>
-          String(x.id) !== String(currentId)
-            ? x
-            : {
-                ...x,
-                lines: x.lines.map((l) =>
-                  l.id !== lid
-                    ? l
-                    : {
-                        ...l,
-                        estado,
-                        motivo,
-                        operario: l.operario || "—",
-                        controlador: ctrl || "Controlador",
-                        ts: Date.now(),
-                      }
-                ),
-              }
-        )
-      );
-      const c = cons.find((x) => x.id === currentId);
-      const line = c?.lines.find((l) => l.id === lid);
-      if (line && estado) {
-        api.post("actualizar_linea", {
-          consId: String(currentId),
-          codigo: line.codigo,
-          descripcion: line.descripcion,
-          estado,
-          motivo: motivo || "",
-          operario: line.operario || "—",      // ← armador original
-          controlador: ctrl || "Controlador",  // ← controlador separado
-        });
-      }
+  if (!ctrl && estado) {
+    toast("⚠️ Seleccioná el controlador primero", "error");
+    return;
+  }
+  // Verificar si la línea pertenece a un operario que no finalizó
+  if (estado) {
+    const line = c.lines.find(l => l.id === lid);
+    const opDueño = (c.activeOps || []).find(op =>
+      (op.divisiones || []).includes(line?.seccion)
+    );
+    if (opDueño && !opDueño.finished) {
+      toast(`⚠️ ${opDueño.nombre} aún no finalizó su parte`, "error");
+      return;
     }
+  }
+  setCons((cs) =>
+    cs.map((x) =>
+      String(x.id) !== String(currentId)
+        ? x
+        : {
+            ...x,
+            lines: x.lines.map((l) =>
+              l.id !== lid
+                ? l
+                : {
+                    ...l,
+                    estado,
+                    motivo,
+                    operario: l.operario || "—",
+                    controlador: ctrl || "Controlador",
+                    ts: Date.now(),
+                  }
+            ),
+          }
+    )
+  );
+  const c = cons.find((x) => x.id === currentId);
+  const line = c?.lines.find((l) => l.id === lid);
+  if (line && estado) {
+    api.post("actualizar_linea", {
+      consId: String(currentId),
+      codigo: line.codigo,
+      descripcion: line.descripcion,
+      estado,
+      motivo: motivo || "",
+      operario: line.operario || "—",
+      controlador: ctrl || "Controlador",
+    });
+  }
+}
   function cerrar(sigData) {
     const now = Date.now();
     const c = cons.find((x) => x.id === currentId);
@@ -5674,39 +5748,45 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
                           ""
                         )}
                       </div>
-                    </div>
-                    {isPend && (
-                      <div
-                        style={{ display: "flex", gap: "6px", flexShrink: 0 }}
-                      >
-                        <button
-                          style={btn({
-                            background: C.green,
-                            color: "#0a0c10",
-                            fontSize: "14px",
-                            fontWeight: 700,
-                            padding: "10px 16px",
-                            borderRadius: "10px",
-                          })}
-                          onClick={() => markLine(line.id, "ok")}
-                        >
-                          ✓ OK
-                        </button>
-                        <button
-                          style={btn({
-                            background: C.red,
-                            color: "#fff",
-                            fontSize: "12px",
-                            fontWeight: 700,
-                            padding: "10px 8px",
-                            borderRadius: "10px",
-                          })}
-                          onClick={() => sEl(line.id)}
-                        >
-                          ✗
-                        </button>
-                      </div>
-                    )}
+                      {isPend && (() => {
+                      const opDueño = (c.activeOps || []).find(op =>
+                        (op.divisiones || []).includes(line.seccion)
+                      );
+                      const bloqueado = opDueño && !opDueño.finished;
+                      return bloqueado ? (
+                        <span style={pill(C.orange)}>⏳ {opDueño.nombre}</span>
+                      ) : (
+                        <div style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                          <button
+                            style={btn({
+                              background: C.green,
+                              color: "#0a0c10",
+                              fontSize: "14px",
+                              fontWeight: 700,
+                              padding: "10px 16px",
+                              borderRadius: "10px",
+                            })}
+                            onClick={() => markLine(line.id, "ok")}
+                          >
+                            ✓ OK
+                          </button>
+                          <button
+                            style={btn({
+                              background: C.red,
+                              color: "#fff",
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              padding: "10px 8px",
+                              borderRadius: "10px",
+                            })}
+                            onClick={() => sEl(line.id)}
+                          >
+                            ✗
+                          </button>
+                        </div>
+                      );
+                    })()}                    </div>
+                    
                     {isOk && (
                       <span style={{ fontSize: "22px", flexShrink: 0 }}>
                         ✅
@@ -5827,8 +5907,7 @@ function ModMetricas({ toast, cons, prods }) {
     (c.lines || [])
       .filter((l) => l.estado === "error")
       .map((l) => ({ ...l, consolidado: c.numero, fecha: c.fecha }))
-  );
-  const errPorMotivo = {};
+  );  const errPorMotivo = {};
   erroresAll.forEach((e) => {
     errPorMotivo[e.motivo] = (errPorMotivo[e.motivo] || 0) + 1;
   });
@@ -5836,24 +5915,36 @@ function ModMetricas({ toast, cons, prods }) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
 
-  const opStats = {};
-  cons.forEach((c) => {
-    (c.activeOps || []).forEach((op) => {
-      if (!opStats[op.id])
-        opStats[op.id] = { ...op, consolidados: 0, minutos: 0, piqueos: 0 };
-      opStats[op.id].consolidados++;
-      if (op.endTime && op.startTime)
-        opStats[op.id].minutos += Math.round(
-          (Number(op.endTime) - Number(op.startTime)) / 60000
-        );
-      opStats[op.id].piqueos +=
-        (c.piqueos || 0) / Math.max((c.activeOps || []).length, 1);
-    });
-  });
-  const opArr = Object.values(opStats).map((o) => ({
-    ...o,
-    piqMin: o.minutos > 0 ? (o.piqueos / o.minutos).toFixed(1) : "—",
-  }));
+    const [rendimiento, setRendimiento] = useState([]);
+    const [loadingRend, setLoadingRend] = useState(false);
+  
+    useEffect(() => {
+      setLoadingRend(true);
+      fetch(`${APPS_SCRIPT_URL}?accion=leer_rendimiento`)
+        .then(r => r.json())
+        .then(d => {
+          if (d.status === "ok") {
+            // Agrupar por operario
+            const agrupado = {};
+            (d.operarios || []).forEach(r => {
+              if (!agrupado[r.nombre]) {
+                agrupado[r.nombre] = { nombre: r.nombre, consolidados: 0, minutos: 0, piqueos: 0 };
+              }
+              agrupado[r.nombre].consolidados++;
+              agrupado[r.nombre].minutos += Number(r.dur) || 0;
+              agrupado[r.nombre].piqueos += Number(r.piqueos) || 0;
+            });
+            setRendimiento(Object.values(agrupado).map(o => ({
+              ...o,
+              piqMin: o.minutos > 0 ? (o.piqueos / o.minutos).toFixed(1) : "—",
+            })));
+          }
+        })
+        .catch(() => {})
+        .finally(() => setLoadingRend(false));
+    }, []);
+  
+    const opArr = rendimiento;
 
   async function enviar() {
     if (APPS_SCRIPT_URL.includes("TU_URL_AQUI")) {
@@ -6257,7 +6348,7 @@ export default function App() {
   </div>
 </button>
             <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
-              {operarios.filter(op => !op.esControlador).map(op => (
+            {operarios.map(op => (
                 <button key={op.id} style={btn({ background:`${op.color}18`, color:op.color, border:`2px solid ${op.color}`, fontSize:"15px", padding:"14px", justifyContent:"flex-start", gap:"12px" })}
                   onClick={() => { setUsuarioActivo(op); }}>
                   <div style={{ width:"36px", height:"36px", borderRadius:"50%", background:op.color, display:"flex", alignItems:"center", justifyContent:"center", fontSize:"16px", fontWeight:700, color:"#fff", flexShrink:0 }}>
