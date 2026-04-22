@@ -3289,9 +3289,17 @@ function ModStock({ toast, operarios }) {
   const [inventario, setInventario] = useState([]); // base del XLS
   const [conteo, setConteo] = useState({});          // { codigo: cantContada }
   const [invFileName, setInvFileName] = useState("");
-
-  useEffect(() => { cargarDatos(); }, []);
-
+  useEffect(() => { cargarDatos(); cargarInventarioBase(); }, []);
+  
+  async function cargarInventarioBase() {
+    try {
+      const r = await fetch(`${APPS_SCRIPT_URL}?accion=leer_inventario_base`).then(r=>r.json());
+      if (r.status === "ok" && r.productos.length > 0) {
+        setInventario(r.productos);
+        setTab("conteo");
+      }
+    } catch {}
+  }
   async function cargarDatos() {
     setLoading(true);
     try {
@@ -3325,10 +3333,12 @@ function ModStock({ toast, operarios }) {
             unidad:      String(r[2] || "UN").trim(),
             cantSistema: parseFloat(r[3]) || 0,
           }));
-        setInventario(parsed);
-        setConteo({});
-        toast(`✅ ${parsed.length} productos cargados · ${file.name}`);
-        setTab("conteo");
+          setInventario(parsed);
+          setConteo({});
+          toast(`✅ ${parsed.length} productos cargados · ${file.name}`);
+          setTab("conteo");
+          // Guardar en Sheet para que otros dispositivos lo vean
+          api.post("guardar_inventario_base", { productos: parsed });
       } catch(err) {
         toast("❌ Error al leer el XLS", "error");
       }
