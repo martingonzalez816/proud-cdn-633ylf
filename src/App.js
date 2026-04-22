@@ -2798,7 +2798,12 @@ function useRecepcion() {
   }, []);
 
   useEffect(() => { sincronizar(); }, []);
-  useEffect(() => { const t = setInterval(sincronizar, 10000); return () => clearInterval(t); }, [sincronizar]);
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (!window._recepEditando) sincronizar();
+    }, 10000);
+    return () => clearInterval(t);
+  }, [sincronizar]);
 
   return { despacho, guardarDespacho, historial, guardarHistorial, sincronizar, syncOk, lastSync, maestro };
 }
@@ -2877,6 +2882,9 @@ function ModRecepcion({ toast, operarios }) {
   const [scanBuffer, setScanBuffer] = useState("");
   const [ultimoScan, setUltimoScan] = useState(null);
   const [modalProd, setModalProd] = useState(null); // { idx, prod }
+  const [modalCant, setModalCant] = useState("");
+  const [modalVenc, setModalVenc] = useState("");
+  const [filtroHoy, setFiltroHoy] = useState(true);
   const bufferRef = useRef("");
   const timerRef = useRef(null);
 
@@ -2908,41 +2916,58 @@ function ModRecepcion({ toast, operarios }) {
   }, [tab, scanActivo, despacho, maestro]);
 
   function buscarEnMaestro(ean) {
-    // Buscar en maestro por cualquier EAN (bulto, display, unidad)
+    const eanStr = String(ean).trim();
     return maestro.find(a =>
-      a.ean_bulto === ean || a.ean_display === ean || a.ean_unidad === ean
+      String(a.ean_bulto || "").trim() === eanStr ||
+      String(a.ean_display || "").trim() === eanStr ||
+      String(a.ean_unidad || "").trim() === eanStr
     );
   }
 
   function procesarEAN(ean) {
     if (!despacho) return;
     const prods = despacho.productos || [];
-
-    // 1. Buscar directo por EAN en el CSV
-    let idx = prods.findIndex(p => p.ean === ean);
-
-    // 2. Si no matchea, buscar en maestro y cruzar por código
+    const eanStr = String(ean).trim();
+  
+    console.log("🔍 Buscando EAN:", eanStr);
+    console.log("📋 Maestro cargado:", maestro.length, "artículos");
+  
+    // 1. Buscar directo por EAN en el CSV del despacho
+    let idx = prods.findIndex(p => String(p.ean || "").trim() === eanStr);
+    console.log("1. Match directo CSV:", idx);
+  
+    // 2. Buscar en maestro por EAN y cruzar por código con el despacho
     if (idx === -1) {
-      const artMaestro = buscarEnMaestro(ean);
+      const artMaestro = buscarEnMaestro(eanStr);
+      console.log("2. Match maestro:", artMaestro?.descripcion, "cod:", artMaestro?.codigo);
       if (artMaestro) {
-        idx = prods.findIndex(p => p.codigo === artMaestro.codigo);
+        const codMaestro = String(artMaestro.codigo || "").trim();
+        idx = prods.findIndex(p => String(p.codigo || "").trim() === codMaestro);
+        console.log("2b. Match por código:", idx, "buscando código:", codMaestro);
       }
     }
-
-    // 3. Fallback: buscar si el EAN contiene el código
-    if (idx === -1) idx = prods.findIndex(p => p.codigo && ean.includes(p.codigo));
-
+  
+    // 3. Fallback: EAN contiene el código del producto
+    if (idx === -1) {
+      idx = prods.findIndex(p => p.codigo && eanStr.includes(String(p.codigo).trim()));
+      console.log("3. Match fallback includes:", idx);
+    }
+  
     if (idx !== -1) {
       setModalProd({ idx, prod: prods[idx] });
+      setModalCant(String(prods[idx].cantReal ?? prods[idx].cantEsperada ?? ""));
+      setModalVenc(prods[idx].vencimiento || "");
       setUltimoScan({ prod: prods[idx], idx });
       toast(`📦 ${prods[idx].descripcion.slice(0,35)}...`);
     } else {
-      toast(`⚠️ EAN ${ean} no encontrado`, "error");
-      setUltimoScan({ prod: null, ean });
+      toast(`⚠️ EAN ${eanStr} no encontrado`, "error");
+      setUltimoScan({ prod: null, ean: eanStr });
+      console.log("❌ No encontrado. Productos en despacho:", prods.map(p => `${p.codigo}|${p.ean}`));
     }
   }
 
   function confirmarModal(cantReal, vencimiento) {
+    window._recepEditando = false;
     if (!despacho || modalProd === null) return;
     const prods = [...despacho.productos];
     const { idx } = modalProd;
@@ -2961,6 +2986,7 @@ function ModRecepcion({ toast, operarios }) {
 
   function setCantidad(idx, valor) {
     if (!despacho) return;
+    window._recepEditando = true; // ← AGREGAR
     const prods = [...despacho.productos];
     const prod = prods[idx];
     const cant = parseInt(valor) || 0;
@@ -2971,6 +2997,7 @@ function ModRecepcion({ toast, operarios }) {
     clearTimeout(window._recepTimer);
     window._recepTimer = setTimeout(() => {
       api.post("recepcion_despacho", { info: actualizado.info, operario, productos: actualizado.productos, timestamp: new Date().toISOString() });
+      window._recepEditando = false; // ← AGREGAR
     }, 2000);
   }
 
@@ -3001,59 +3028,7 @@ function ModRecepcion({ toast, operarios }) {
     setTab("resumen");
   }
 
-  // ── Modal cantidad + vencimiento ────────────────────────
-  function ModalCantVenc() {
-    if (!modalProd) return null;
-    const { idx, prod } = modalProd;
-    const [cant, setCant] = useState(prod.cantReal ?? prod.cantEsperada ?? "");
-    const [venc, setVenc] = useState(prod.vencimiento || "");
-    const diff = parseInt(cant) - prod.cantEsperada;
-    const diffColor = diff === 0 ? C.green : diff < 0 ? C.orange : C.blue;
-    return (
-      <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:2000, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
-        <div style={{ ...card({ borderColor:C.accent }), width:"100%", maxWidth:"500px", borderRadius:"16px 16px 0 0", padding:"20px" }}>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px" }}>
-            <div style={{ fontWeight:700, fontSize:"15px" }}>📦 {prod.descripcion.slice(0,40)}</div>
-            <button style={btn({ background:C.surf2, color:C.muted, padding:"4px 10px", fontSize:"12px" })} onClick={() => setModalProd(null)}>✕</button>
-          </div>
-          <div style={{ background:C.surf2, borderRadius:"8px", padding:"10px", marginBottom:"12px", fontSize:"11px", color:C.muted }}>
-            Cód: {prod.codigo} · Esperado: <strong style={{ color:C.text }}>{prod.cantEsperada} {prod.unidad}</strong>
-          </div>
-          <label style={lbl}>Cantidad recibida</label>
-          <input
-            type="number" inputMode="numeric"
-            style={{ ...inp, fontSize:"32px", fontWeight:900, textAlign:"center", padding:"14px", marginBottom:"8px",
-              borderColor: parseInt(cant) === prod.cantEsperada ? C.green : parseInt(cant) < prod.cantEsperada ? C.orange : C.blue }}
-            value={cant} onChange={e => setCant(e.target.value)} autoFocus
-          />
-          {cant !== "" && parseInt(cant) !== prod.cantEsperada && (
-            <div style={{ textAlign:"center", fontSize:"13px", fontWeight:700, color:diffColor, marginBottom:"8px" }}>
-              {diff > 0 ? `+${diff} de más` : `${diff} de menos`}
-            </div>
-          )}
-          <label style={{ ...lbl, marginTop:"10px" }}>Vencimiento (MM/AAAA)</label>
-          <input
-            type="text" inputMode="numeric" placeholder="MM/AAAA" maxLength={7}
-            style={{ ...inp, marginBottom:"16px", fontSize:"22px", textAlign:"center", letterSpacing:"4px" }}
-            value={venc}
-            onChange={e => {
-              let v = e.target.value.replace(/\D/g,"");
-              if (v.length > 2) v = v.slice(0,2)+"/"+v.slice(2,6);
-              setVenc(v);
-            }}
-          />
-          <div style={{ display:"flex", gap:"8px" }}>
-            <button style={btn({ background:C.surf2, color:C.muted, border:`1px solid ${C.bord}`, flex:1 })} onClick={() => setModalProd(null)}>Cancelar</button>
-            <button
-              style={btn({ background: parseInt(cant)===prod.cantEsperada ? `linear-gradient(135deg,${C.green},#059669)` : `linear-gradient(135deg,${C.orange},#e67e22)`, color:"#fff", fontWeight:700, flex:2, fontSize:"14px" })}
-              disabled={cant === ""}
-              onClick={() => confirmarModal(cant, venc)}
-            >✓ Confirmar</button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  
 
   // ── TAB CARGA ────────────────────────────────────────────
   if (tab === "carga") return (
@@ -3102,6 +3077,15 @@ function ModRecepcion({ toast, operarios }) {
           <button style={btn({ background:C.green, color:"#0a0c10", fontWeight:700, width:"100%" })} onClick={() => setTab("control")}>→ Continuar control</button>
         </div>
       )}
+
+      {historial.length > 0 && (
+        <button
+          style={btn({ background:"transparent", color:C.muted, border:`1px solid ${C.bord}`, width:"100%", fontSize:"12px" })}
+          onClick={() => setTab("resumen")}
+        >
+          📋 Ver historial ({historial.length} recepciones)
+        </button>
+      )}
     </div>
   );
 
@@ -3116,7 +3100,54 @@ function ModRecepcion({ toast, operarios }) {
 
     return (
       <div style={BS}>
-        <ModalCantVenc />
+        {modalProd && (
+          <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.85)", zIndex:2000, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+            <div style={{ ...card({ borderColor:C.accent }), width:"100%", maxWidth:"500px", borderRadius:"16px 16px 0 0", padding:"20px" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px" }}>
+                <div style={{ fontWeight:700, fontSize:"15px" }}>📦 {modalProd.prod.descripcion.slice(0,40)}</div>
+                <button style={btn({ background:C.surf2, color:C.muted, padding:"4px 10px", fontSize:"12px" })} onClick={() => setModalProd(null)}>✕</button>
+              </div>
+              <div style={{ background:C.surf2, borderRadius:"8px", padding:"10px", marginBottom:"12px", fontSize:"11px", color:C.muted }}>
+                Cód: {modalProd.prod.codigo} · Esperado: <strong style={{ color:C.text }}>{modalProd.prod.cantEsperada} {modalProd.prod.unidad}</strong>
+              </div>
+              <label style={lbl}>Cantidad recibida</label>
+              <input
+                type="number" inputMode="numeric"
+                style={{ ...inp, fontSize:"32px", fontWeight:900, textAlign:"center", padding:"14px", marginBottom:"8px",
+                  borderColor: parseInt(modalCant) === modalProd.prod.cantEsperada ? C.green : parseInt(modalCant) < modalProd.prod.cantEsperada ? C.orange : C.blue }}
+                value={modalCant}
+                onChange={e => setModalCant(e.target.value)}
+                autoFocus
+              />
+              {modalCant !== "" && parseInt(modalCant) !== modalProd.prod.cantEsperada && (
+                <div style={{ textAlign:"center", fontSize:"13px", fontWeight:700, color: parseInt(modalCant)-modalProd.prod.cantEsperada > 0 ? C.blue : C.orange, marginBottom:"8px" }}>
+                  {parseInt(modalCant)-modalProd.prod.cantEsperada > 0
+                    ? `+${parseInt(modalCant)-modalProd.prod.cantEsperada} de más`
+                    : `${parseInt(modalCant)-modalProd.prod.cantEsperada} de menos`}
+                </div>
+              )}
+              <label style={{ ...lbl, marginTop:"10px" }}>Vencimiento (MM/AAAA)</label>
+              <input
+                type="text" inputMode="numeric" placeholder="MM/AAAA" maxLength={7}
+                style={{ ...inp, marginBottom:"16px", fontSize:"22px", textAlign:"center", letterSpacing:"4px" }}
+                value={modalVenc}
+                onChange={e => {
+                  let v = e.target.value.replace(/\D/g,"");
+                  if (v.length > 2) v = v.slice(0,2)+"/"+v.slice(2,6);
+                  setModalVenc(v);
+                }}
+              />
+              <div style={{ display:"flex", gap:"8px" }}>
+                <button style={btn({ background:C.surf2, color:C.muted, border:`1px solid ${C.bord}`, flex:1 })} onClick={() => setModalProd(null)}>Cancelar</button>
+                <button
+                  style={btn({ background: parseInt(modalCant)===modalProd.prod.cantEsperada ? `linear-gradient(135deg,${C.green},#059669)` : `linear-gradient(135deg,${C.orange},#e67e22)`, color:"#fff", fontWeight:700, flex:2, fontSize:"14px" })}
+                  disabled={modalCant === ""}
+                  onClick={() => confirmarModal(modalCant, modalVenc)}
+                >✓ Confirmar</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div style={card({ padding:"12px 14px" })}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"8px" }}>
             <span style={{ fontWeight:700, fontSize:"15px" }}>Carga #{despacho.info.nroCarga}</span>
@@ -3155,7 +3186,11 @@ function ModRecepcion({ toast, operarios }) {
                 const borderColor = esOk?C.green:esDiff?C.orange:C.bord;
                 return (
                   <div key={prod.id} style={{ borderLeft:`3px solid ${borderColor}`, paddingLeft:"10px", marginBottom:"10px", paddingBottom:"10px", borderBottom:`1px solid ${C.bord}`, background:esOk?"rgba(6,214,160,.04)":esDiff?"rgba(255,140,66,.04)":"transparent", borderRadius:"0 6px 6px 0", cursor:"pointer" }}
-                    onClick={() => setModalProd({ idx, prod })}>
+                  onClick={() => {
+                    setModalProd({ idx, prod });
+                    setModalCant(String(prod.cantReal ?? prod.cantEsperada ?? ""));
+                    setModalVenc(prod.vencimiento || "");
+                  }}>
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
                       <div style={{ flex:1 }}>
                         <div style={{ fontWeight:700, fontSize:"13px" }}>{prod.descripcion}</div>
@@ -3194,45 +3229,102 @@ function ModRecepcion({ toast, operarios }) {
     );
   }
 
-  // ── TAB RESUMEN ──────────────────────────────────────────
-  if (tab === "resumen") {
-    const ultima = historial[0];
-    if (!ultima) { setTab("carga"); return null; }
-    const ok = (ultima.productos||[]).filter(p=>p.estado==="ok").length;
-    const diff = (ultima.productos||[]).filter(p=>p.estado==="diferencia").length;
-    const pend = (ultima.productos||[]).filter(p=>!p.estado||p.estado==="pendiente").length;
-    return (
-      <div style={BS}>
-        <div style={card({ borderColor:C.green, textAlign:"center", padding:"24px" })}>
-          <div style={{ fontSize:"48px", marginBottom:"8px" }}>✅</div>
-          <div style={{ fontSize:"18px", fontWeight:900, color:C.green }}>Recepción completada</div>
-          <div style={{ fontSize:"12px", color:C.muted }}>Carga #{ultima.info?.nroCarga}</div>
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px" }}>
-          {[[ok,"✓ OK",C.green],[diff,"⚠ Difer.",C.orange],[pend,"⏳ Pend.",C.muted]].map(([v,l,c]) => (
-            <div key={l} style={card({ padding:"10px", textAlign:"center" })}>
-              <div style={{ fontSize:"22px", fontWeight:900, color:c }}>{v}</div>
-              <div style={{ fontSize:"9px", color:C.muted }}>{l}</div>
-            </div>
-          ))}
-        </div>
-        {diff > 0 && (
-          <div style={card({ borderColor:C.orange })}>
-            <div style={secTit}>⚠️ DIFERENCIAS</div>
-            {(ultima.productos||[]).filter(p=>p.estado==="diferencia").map(p => (
-              <div key={p.id} style={{ padding:"8px 0", borderBottom:`1px solid ${C.bord}`, fontSize:"12px" }}>
-                <div style={{ fontWeight:600 }}>{p.descripcion}</div>
-                <div style={{ color:C.orange }}>Esperado: {p.cantEsperada} · Recibido: {p.cantReal}</div>
-              </div>
-            ))}
-          </div>
-        )}
-        <button style={btn({ background:C.accent, color:"#fff", fontWeight:700, width:"100%", fontSize:"14px", padding:"14px" })} onClick={() => setTab("carga")}>
-          + Nueva recepción
-        </button>
-      </div>
-    );
+ // ── TAB RESUMEN ──────────────────────────────────────────
+ if (tab === "resumen") {
+  const hoyStr = todayStr();
+  const histFiltrado = filtroHoy
+    ? historial.filter(h =>
+        (h.finalizadaEn || "").startsWith(hoyStr) ||
+        (h.info?.fecha || "") === hoyStr
+      )
+    : historial;
+
+  function eliminarRecepcion(id) {
+    if (!window.confirm("¿Eliminar esta recepción?")) return;
+    guardarHistorial(prev => prev.filter(h => String(h.id) !== String(id)));
+    toast("🗑 Recepción eliminada");
   }
+
+  return (
+    <div style={BS}>
+      {/* Header con filtro */}
+      <div style={{ display:"flex", gap:"8px", alignItems:"center" }}>
+        <button
+          style={btn({ background:filtroHoy?C.accent:"transparent", color:filtroHoy?"#fff":C.muted, border:`1px solid ${filtroHoy?C.accent:C.bord}`, flex:1, fontSize:"12px" })}
+          onClick={() => setFiltroHoy(true)}
+        >📅 Hoy</button>
+        <button
+          style={btn({ background:!filtroHoy?C.accent:"transparent", color:!filtroHoy?"#fff":C.muted, border:`1px solid ${!filtroHoy?C.accent:C.bord}`, flex:1, fontSize:"12px" })}
+          onClick={() => setFiltroHoy(false)}
+        >📋 Todas</button>
+        <button
+          style={btn({ background:`linear-gradient(135deg,${C.green},#059669)`, color:"#0a0c10", fontWeight:700, fontSize:"12px", padding:"10px 14px" })}
+          onClick={() => setTab("carga")}
+        >+ Nueva</button>
+      </div>
+
+      {histFiltrado.length === 0 && (
+        <div style={{ textAlign:"center", color:C.muted, padding:"40px" }}>
+          {filtroHoy ? "Sin recepciones hoy." : "Sin recepciones registradas."}
+        </div>
+      )}
+
+      {histFiltrado.map((h) => {
+        const ok   = (h.productos||[]).filter(p => p.estado==="ok").length;
+        const diff = (h.productos||[]).filter(p => p.estado==="diferencia").length;
+        const pend = (h.productos||[]).filter(p => !p.estado||p.estado==="pendiente").length;
+        const total = (h.productos||[]).length;
+        const hora = h.finalizadaEn
+          ? new Date(h.finalizadaEn).toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit"})
+          : "—";
+        return (
+          <div key={h.id} style={card({ borderLeft:`3px solid ${diff>0?C.orange:C.green}` })}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:"8px" }}>
+              <div>
+                <div style={{ fontWeight:900, fontSize:"16px" }}>Carga #{h.info?.nroCarga}</div>
+                <div style={{ fontSize:"11px", color:C.muted }}>
+                  {h.info?.fecha} · {hora} · {h.operario||"—"}
+                </div>
+                {h.info?.chofer && (
+                  <div style={{ fontSize:"10px", color:C.muted }}>
+                    🚛 {h.info.chofer} · {h.info.pallets} pallets
+                  </div>
+                )}
+              </div>
+              <button
+                style={btn({ background:"transparent", color:C.red, border:`1px solid ${C.red}`, padding:"5px 10px", fontSize:"13px" })}
+                onClick={() => eliminarRecepcion(h.id)}
+              >🗑</button>
+            </div>
+
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:"6px", marginBottom:"8px" }}>
+              {[[ok,"✓ OK",C.green],[diff,"⚠ Dif.",C.orange],[pend,"⏳ Pend.",C.muted]].map(([v,l,c]) => (
+                <div key={l} style={{ background:C.surf2, borderRadius:"8px", padding:"8px", textAlign:"center" }}>
+                  <div style={{ fontSize:"18px", fontWeight:900, color:c }}>{v}</div>
+                  <div style={{ fontSize:"9px", color:C.muted }}>{l}</div>
+                </div>
+              ))}
+            </div>
+
+            {diff > 0 && (
+              <div style={{ background:"rgba(255,140,66,.08)", borderRadius:"8px", padding:"8px 10px", marginBottom:"8px" }}>
+                <div style={{ fontSize:"10px", fontWeight:700, color:C.orange, marginBottom:"4px" }}>⚠ DIFERENCIAS</div>
+                {(h.productos||[]).filter(p=>p.estado==="diferencia").map(p => (
+                  <div key={p.id} style={{ fontSize:"11px", padding:"3px 0", borderBottom:`1px solid ${C.bord}` }}>
+                    <span style={{ fontWeight:600 }}>{p.descripcion}</span>
+                    <span style={{ color:C.orange, marginLeft:"8px" }}>Esp: {p.cantEsperada} · Rec: {p.cantReal}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ fontSize:"10px", color:C.muted }}>{total} productos verificados</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
   return <div style={BS}><div style={{ textAlign:"center", color:C.muted, padding:"40px" }}><button style={btn({ background:C.accent, color:"#fff" })} onClick={() => setTab("carga")}>→ Ir a carga</button></div></div>;
 }
@@ -3545,7 +3637,8 @@ function ModArmado({ toast, operarios, cons, setCons, usuarioActivo }) {
 
   const [fileName, setFN] = useState("");
   const [tick, setTick] = useState(0);
-  const [fechaFiltro, setFechaFiltro] = useState(todayStr()); // ← AGREGAR
+  const [fechaFiltro, setFechaFiltro] = useState(todayStr());
+  const [fObs, setFObs] = useState("");
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 5000);
     return () => clearInterval(t);
@@ -3742,6 +3835,7 @@ function ModArmado({ toast, operarios, cons, setCons, usuarioActivo }) {
     const c = {
       id: now,
       numero: numeroCompleto,
+      observacion: fObs,
       prefijo: fPrefijo,
       fecha: fFecha,
       horaInicio: fHoraInicio,
@@ -3990,6 +4084,8 @@ o.id === op.id && (!o.startTime || o.startTime === c.startTime)
       setCons((cs) => cs.map((x) => {
         if (x.id !== currentId) return x;
         const line = x.lines.find((l) => l.id === lineId);
+        // Si ya fue controlada no permitir cambios
+        if (line?.estado === "ok" || line?.estado === "error") return x;
         const nuevoEstado = line?.estado === "armado" ? null : "armado";
         const nuevasLines = x.lines.map((l) =>
           l.id === lineId
@@ -4404,6 +4500,16 @@ onClick={() => {
                 onChange={(e) => sfh(e.target.value)}
               />
             </div>
+            </div>
+          <div style={{ marginTop:"9px" }}>
+            <label style={lbl}>Observación (opcional)</label>
+            <input
+              type="text"
+              style={inp}
+              value={fObs}
+              onChange={(e) => setFObs(e.target.value)}
+              placeholder="Ej: pedido urgente, cliente VIP..."
+            />
           </div>
         </div>
 
@@ -4660,6 +4766,7 @@ onClick={() => {
         sfo([]);
         sfc("");
         setFDivisiones({});
+        setFObs("");
         setScr("setup");
       }}
     >
@@ -4672,13 +4779,12 @@ onClick={() => {
       )}
       {[...cons].reverse()
 .filter(c => {
-  // Filtro fecha
   if (fechaFiltro) {
     const fechaId = new Date(Number(c.id)).toISOString().split("T")[0];
     if (fechaId !== fechaFiltro) return false;
   }
-  // Filtro por usuario activo — solo muestra consolidados donde está asignado
-  if (usuarioActivo) {
+  // Supervisor ve todo, operario solo ve lo suyo
+  if (usuarioActivo && !usuarioActivo.esSupervisor) {
     return c.activeOps.some(op => op.nombre === usuarioActivo.nombre);
   }
   return true;
@@ -4862,7 +4968,8 @@ onClick={() => {
                           <div class="linea"></div>
                           <div class="fila"><span>Fecha</span><span>${fecha}</span></div>
                           <div class="fila"><span>Hora inicio</span><span>${c.horaInicio || "—"}</span></div>
-                          <div class="fila"><span>Total líneas</span><span>${lineasOp.length}</span></div>
+<div class="fila"><span>Total líneas</span><span>${lineasOp.length}</span></div>
+${c.observacion ? `<div class="fila"><span>📝 Obs.</span><span style="font-size:7pt">${c.observacion}</span></div>` : ""}
                           <div class="linea"></div>
                           <div class="op" style="color:${op.color}">${op.nombre}</div>
                           <div class="divs">${divs.join(" · ") || "Todas las divisiones"}</div>
@@ -4934,6 +5041,7 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
   const [currentId, setCId] = useState(null);
   const [showSig, sSig] = useState(false);
   const [ctrl, sCtrl] = useState("");
+  const [fechaFiltroCtrl, setFechaFiltroCtrl] = useState(todayStr());
   const [errLine, sEl] = useState(null);
   const [filterV, sfV] = useState("todos");
   const [showPrint, sPrint] = useState(false);
@@ -5100,6 +5208,20 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
             marginBottom: "2px",
           }}
         >
+          <div style={{ display:"flex", gap:"8px", alignItems:"center", marginBottom:"8px" }}>
+  <input
+    type="date"
+    style={{ ...inp, flex:1 }}
+    value={fechaFiltroCtrl}
+    onChange={e => setFechaFiltroCtrl(e.target.value)}
+  />
+  <button
+    style={btn({ background:C.surf2, color:C.muted, border:`1px solid ${C.bord}`, padding:"9px 12px", fontSize:"12px" })}
+    onClick={() => setFechaFiltroCtrl("")}
+  >
+    Todos
+  </button>
+</div>
           <div style={secTit}>🔍 CONTROL DE CONSOLIDADOS</div>
           <button
             style={btn({
@@ -5119,7 +5241,13 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
             No hay consolidados generados aún.
           </div>
         )}
-        {cons.map((c) => {
+       {cons
+  .filter(c => {
+    if (!fechaFiltroCtrl) return true;
+    const fechaId = new Date(Number(c.id)).toISOString().split("T")[0];
+    return fechaId === fechaFiltroCtrl;
+  })
+  .map((c) => {
           const fd = firmados.find((x) => x.id === c.id);
           const ok = c.lines.filter((l) => l.estado === "ok").length;
           const err = c.lines.filter((l) => l.estado === "error").length;
@@ -6107,6 +6235,27 @@ export default function App() {
           <div style={card({ borderColor:C.accent })}>
             <div style={secTit}>👷 SELECCIONÁ TU NOMBRE</div>
             <p style={{ fontSize:"12px", color:C.muted, marginBottom:"16px" }}>Vas a ver solo los consolidados asignados a vos.</p>
+            <button
+  style={btn({
+    background:`${C.gold}18`,
+    color:C.gold,
+    border:`2px solid ${C.gold}`,
+    fontSize:"15px",
+    padding:"14px",
+    justifyContent:"flex-start",
+    gap:"12px",
+    marginBottom:"8px",
+  })}
+  onClick={() => setUsuarioActivo({ nombre:"SUPERVISOR", color:C.gold, esSupervisor:true })}
+>
+  <div style={{ width:"36px", height:"36px", borderRadius:"50%", background:C.gold, display:"flex", alignItems:"center", justifyContent:"center", fontSize:"16px", fontWeight:700, color:"#fff", flexShrink:0 }}>
+    👁
+  </div>
+  <div style={{ textAlign:"left" }}>
+    <div style={{ fontWeight:700 }}>SUPERVISOR</div>
+    <div style={{ fontSize:"11px", opacity:0.7 }}>Ver todos los consolidados</div>
+  </div>
+</button>
             <div style={{ display:"flex", flexDirection:"column", gap:"8px" }}>
               {operarios.filter(op => !op.esControlador).map(op => (
                 <button key={op.id} style={btn({ background:`${op.color}18`, color:op.color, border:`2px solid ${op.color}`, fontSize:"15px", padding:"14px", justifyContent:"flex-start", gap:"12px" })}
