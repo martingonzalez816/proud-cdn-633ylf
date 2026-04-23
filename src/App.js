@@ -6287,7 +6287,584 @@ function ModMetricas({ toast, cons, prods }) {
     </div>
   );
 }
+function ModRoturas({ toast, operarios }) {
+  const [operario, setOperario] = useState("");
+  const [scanActivo, setScanActivo] = useState(false);
+  const [scanBuffer, setScanBuffer] = useState("");
+  const [maestro, setMaestro] = useState([]);
+  const [items, setItems] = useState([]);
+  const [modalItem, setModalItem] = useState(null);
+  const [modalCant, setModalCant] = useState("");
+  const [modalMotivo, setModalMotivo] = useState("");
+  const [modalObs, setModalObs] = useState("");
+  const [modalDesc, setModalDesc] = useState("");
+  const [modalCod, setModalCod] = useState("");
+  const [modoManual, setModoManual] = useState(false);
+  const bufferRef = useRef("");
+  const timerRef = useRef(null);
 
+  useEffect(() => {
+    fetch(`${APPS_SCRIPT_URL}?accion=leer_maestro`)
+      .then(r => r.json())
+      .then(d => { if (d.status === "ok") setMaestro(d.articulos || []); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    function onKey(e) {
+      if (!scanActivo) return;
+      if (e.key === "Enter") {
+        const ean = bufferRef.current.trim();
+        bufferRef.current = ""; setScanBuffer("");
+        clearTimeout(timerRef.current);
+        if (ean.length >= 4) procesarEAN(ean);
+      } else if (e.key.length === 1) {
+        bufferRef.current += e.key;
+        setScanBuffer(bufferRef.current);
+        clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+          const ean = bufferRef.current.trim();
+          bufferRef.current = ""; setScanBuffer("");
+          if (ean.length >= 4) procesarEAN(ean);
+        }, 200);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [scanActivo, maestro]);
+
+  function procesarEAN(ean) {
+    const eanStr = String(ean).trim();
+    let art = maestro.find(a =>
+      String(a.ean_bulto||"").trim() === eanStr ||
+      String(a.ean_display||"").trim() === eanStr ||
+      String(a.ean_unidad||"").trim() === eanStr
+    );
+    if (!art) art = maestro.find(a => eanStr.endsWith(String(a.codigo||"").trim()));
+    if (!art) {
+      toast(`⚠️ EAN ${eanStr} no encontrado — ingresá manual`, "error");
+      setModalCod(eanStr);
+      setModalDesc("");
+      setModalCant("");
+      setModalMotivo("");
+      setModalObs("");
+      setModoManual(true);
+      setModalItem({ manual: true });
+      return;
+    }
+    setModalCod(art.codigo);
+    setModalDesc(art.descripcion);
+    setModalCant("");
+    setModalMotivo("");
+    setModalObs("");
+    setModoManual(false);
+    setModalItem(art);
+  }
+
+  function confirmarItem() {
+    if (!modalCant || parseInt(modalCant) <= 0) { toast("⚠️ Ingresá la cantidad", "error"); return; }
+    if (!modalMotivo) { toast("⚠️ Seleccioná el motivo", "error"); return; }
+    const nuevo = {
+      id: Date.now(),
+      codigo: modalCod,
+      descripcion: modalDesc || modalCod,
+      cantidad: parseInt(modalCant),
+      motivo: modalMotivo,
+      observacion: modalObs,
+      operario,
+      fecha: todayStr(),
+      hora: new Date().toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit" }),
+    };
+    setItems(prev => [nuevo, ...prev]);
+    setModalItem(null);
+    toast(`✅ ${nuevo.descripcion.slice(0,30)} · ${nuevo.cantidad} · ${nuevo.motivo}`);
+  }
+
+  function eliminarItem(id) {
+    setItems(prev => prev.filter(i => i.id !== id));
+  }
+
+  async function enviarAlSheet() {
+    if (!operario) { toast("⚠️ Seleccioná el operario", "error"); return; }
+    if (items.length === 0) { toast("⚠️ No hay productos cargados", "error"); return; }
+    try {
+      await api.post("guardar_roturas", { items, operario, fecha: todayStr() });
+      toast(`✅ ${items.length} productos enviados al Sheet`);
+      setItems([]);
+    } catch { toast("❌ Error al enviar", "error"); }
+  }
+
+  return (
+    <div style={BS}>
+      {modalItem && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.88)", zIndex:2000, display:"flex", alignItems:"flex-end", justifyContent:"center" }}>
+          <div style={{ ...card({ borderColor:C.red }), width:"100%", maxWidth:"500px", borderRadius:"16px 16px 0 0", padding:"20px" }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"12px" }}>
+              <div style={{ fontWeight:700, fontSize:"15px", color:C.red }}>⚠️ Registrar baja</div>
+              <button style={btn({ background:C.surf2, color:C.muted, padding:"4px 10px", fontSize:"12px" })} onClick={() => setModalItem(null)}>✕</button>
+            </div>
+            {modoManual ? (
+              <>
+                <label style={lbl}>Código</label>
+                <input style={{ ...inp, marginBottom:"8px" }} value={modalCod} onChange={e => setModalCod(e.target.value)} placeholder="Código del producto" />
+                <label style={lbl}>Descripción</label>
+                <input style={{ ...inp, marginBottom:"12px" }} value={modalDesc} onChange={e => setModalDesc(e.target.value)} placeholder="Nombre del producto" autoFocus />
+              </>
+            ) : (
+              <div style={{ background:C.surf2, borderRadius:"8px", padding:"10px", marginBottom:"12px", fontSize:"12px" }}>
+                <div style={{ fontWeight:700 }}>{modalDesc}</div>
+                <div style={{ color:C.muted, fontSize:"10px" }}>Cód: {modalCod}</div>
+              </div>
+            )}
+            <label style={lbl}>Cantidad</label>
+            <input
+              type="number" inputMode="numeric"
+              style={{ ...inp, fontSize:"36px", fontWeight:900, textAlign:"center", padding:"12px", marginBottom:"12px" }}
+              value={modalCant}
+              onChange={e => setModalCant(e.target.value)}
+              autoFocus={!modoManual}
+            />
+            <label style={lbl}>Motivo</label>
+            <div style={{ display:"flex", gap:"8px", marginBottom:"12px" }}>
+              {["Rotura", "Vencimiento"].map(m => (
+                <button key={m}
+                  style={btn({ background: modalMotivo===m ? (m==="Rotura"?C.red:C.orange) : "transparent",
+                    color: modalMotivo===m ? "#fff" : C.muted,
+                    border: `2px solid ${modalMotivo===m ? (m==="Rotura"?C.red:C.orange) : C.bord}`,
+                    flex:1, fontSize:"14px", padding:"12px" })}
+                  onClick={() => setModalMotivo(m)}
+                >{m==="Rotura" ? "💥 Rotura" : "📅 Vencimiento"}</button>
+              ))}
+            </div>
+            <label style={lbl}>Observación (opcional)</label>
+            <input style={{ ...inp, marginBottom:"16px" }} value={modalObs} onChange={e => setModalObs(e.target.value)} placeholder="Detalle adicional..." />
+            <div style={{ display:"flex", gap:"8px" }}>
+              <button style={btn({ background:C.surf2, color:C.muted, border:`1px solid ${C.bord}`, flex:1 })} onClick={() => setModalItem(null)}>Cancelar</button>
+              <button style={btn({ background:`linear-gradient(135deg,${C.red},#c0392b)`, color:"#fff", fontWeight:700, flex:2, fontSize:"14px" })}
+                onClick={confirmarItem}>✓ Confirmar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={card()}>
+        <div style={secTit}>⚠️ ROTURA Y VENCIMIENTOS</div>
+        <label style={lbl}>Operario</label>
+        <select style={{ ...inp, marginBottom:"12px" }} value={operario} onChange={e => setOperario(e.target.value)}>
+          <option value="">— Seleccionar —</option>
+          {operarios.map(op => <option key={op.id} value={op.nombre}>{op.nombre}</option>)}
+        </select>
+        <button
+          style={btn({ background:scanActivo?`linear-gradient(135deg,${C.green},#059669)`:`linear-gradient(135deg,#e91e63,#c2185b)`,
+            color:scanActivo?"#0a0c10":"#fff", width:"100%", fontWeight:700, fontSize:"14px", padding:"13px" })}
+          onClick={() => { setScanActivo(v=>!v); bufferRef.current=""; setScanBuffer(""); }}
+        >
+          {scanActivo ? `🔫 ESCÁNER ACTIVO · ${scanBuffer||"Esperando..."}` : "🔫 Activar escáner Bluetooth"}
+        </button>
+        <button
+          style={btn({ background:"transparent", color:"#e91e63", border:`1px solid #e91e63`, width:"100%", marginTop:"8px", fontSize:"13px" })}
+          onClick={() => { setModalCod(""); setModalDesc(""); setModalCant(""); setModalMotivo(""); setModalObs(""); setModoManual(true); setModalItem({ manual:true }); }}
+        >
+          ✏️ Ingreso manual
+        </button>
+      </div>
+
+      {items.length > 0 && (
+        <>
+          {items.map(item => (
+            <div key={item.id} style={{ ...card({ padding:"12px 14px" }), borderLeft:`3px solid ${item.motivo==="Rotura"?C.red:C.orange}` }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontWeight:700, fontSize:"13px" }}>{item.descripcion}</div>
+                  <div style={{ fontSize:"10px", color:C.muted, marginTop:"2px" }}>
+                    Cód: {item.codigo} · {item.hora} · {item.operario}
+                  </div>
+                  {item.observacion && <div style={{ fontSize:"11px", color:C.muted, marginTop:"2px" }}>📝 {item.observacion}</div>}
+                </div>
+                <div style={{ textAlign:"right", flexShrink:0, marginLeft:"8px" }}>
+                  <div style={{ fontSize:"22px", fontWeight:900, color:item.motivo==="Rotura"?C.red:C.orange }}>{item.cantidad}</div>
+                  <span style={pill(item.motivo==="Rotura"?C.red:C.orange, { fontSize:"9px" })}>{item.motivo}</span>
+                </div>
+              </div>
+              <button style={btn({ background:"transparent", color:C.muted, border:`1px solid ${C.bord}`, width:"100%", marginTop:"8px", fontSize:"11px" })}
+                onClick={() => eliminarItem(item.id)}>🗑 Quitar</button>
+            </div>
+          ))}
+          <div style={card()}>
+            <div style={{ display:"flex", gap:"6px", marginBottom:"10px", flexWrap:"wrap" }}>
+              <span style={pill(C.red)}>{items.filter(i=>i.motivo==="Rotura").length} roturas</span>
+              <span style={pill(C.orange)}>{items.filter(i=>i.motivo==="Vencimiento").length} vencimientos</span>
+            </div>
+            <button style={btn({ background:`linear-gradient(135deg,${C.green},#059669)`, color:"#0a0c10", fontWeight:700, width:"100%", fontSize:"14px", padding:"14px" })}
+              onClick={enviarAlSheet}>
+              📤 ENVIAR AL SHEET ({items.length} productos)
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+const CONTROLES_CONFIG = {
+  matafuegos: {
+    label: "🧯 Matafuegos",
+    color: "#e53935",
+    frecuenciaDias: 90,
+    items: [
+      "Matafuego Golosinas", "Matafuego Harinas", "Matafuego Galpón Bagley",
+      "Matafuego Chocolates", "Matafuego Helados", "Matafuego Recepción",
+      "Matafuego Vendedores", "Matafuego Camión 1/3", "Matafuego Camión 4/6",
+      "Matafuego Camión 7/8", "Matafuego Camión 9/11", "Matafuego Transit",
+      "Matafuego Boxer", "Matafuego Sprinter",
+    ],
+    campos: ["vencimiento", "estado_carga"],
+  },
+  racks: {
+    label: "🏗️ Racks",
+    color: "#7b1fa2",
+    frecuenciaDias: 90,
+    items: ["Rack 01","Rack 02","Rack 03","Rack 04","Rack 05","Rack 06","Rack 07","Rack 08","Rack 09","Rack 10"],
+    campos: ["estado"],
+  },
+  temp_congelados: {
+    label: "🧊 Temp. Congelados",
+    color: "#0288d1",
+    frecuenciaDias: 1,
+    items: [], // dinámico — se agregan repartos
+    campos: ["transporte", "chofer", "patente", "temperatura"],
+    dinamico: true,
+  },
+  temp_ruta: {
+    label: "🌡️ Temp. En Ruta",
+    color: "#00838f",
+    frecuenciaDias: 1,
+    items: ["Camión 1/3","Camión 4/6","Camión 7/8","Camión 9/11","Transit","Boxer","Sprinter"],
+    campos: ["temperatura"],
+  },
+  mantenimiento_vehiculos: {
+    label: "🚛 Mantenimiento Vehículos",
+    color: "#f57f17",
+    frecuenciaDias: 30,
+    items: ["Camión 1/3","Camión 4/6","Camión 7/8","Camión 9/11","Transit","Boxer","Sprinter"],
+    campos: ["checklist_vehiculo"],
+  },
+  mantenimiento_equipos: {
+    label: "⚙️ Equipos y Zorras",
+    color: "#4e342e",
+    frecuenciaDias: 30,
+    items: [
+      "Generador","Apilador 1","Apilador 2",
+      "Clark — Fluidos","Clark — Frenos","Clark — Neumáticos",
+      "Zorra Manual 1","Zorra Manual 2","Zorra Manual 3",
+      "Zorra Manual 4","Zorra Manual 5","Zorra Manual 6",
+    ],
+    campos: ["estado"],
+  },
+  limpieza: {
+    label: "🧹 Limpieza",
+    color: "#2e7d32",
+    frecuenciaDias: 7,
+    items: ["Baños","Techos","Paredes","Desagües"],
+    campos: ["estado"],
+  },
+};
+
+const CHECKLIST_VEHICULO = [
+  "Luces delanteras","Luces traseras","Frenos",
+  "Presión neumáticos","Limpieza interior","Bocina",
+  "Agua refrigerante","Líquido frenos",
+];
+
+function ModControles({ toast, operarios }) {
+  const [subTab, setSubTab] = useState(null);
+  const [ultimosControles, setUltimosControles] = useDB("rosarc_controles_v1", {});
+
+  if (!subTab) {
+    return (
+      <div style={BS}>
+        <div style={card()}>
+          <div style={secTit}>📋 CONTROLES OPERATIVOS</div>
+          <p style={{ fontSize:"12px", color:C.muted, marginBottom:"0" }}>
+            Seleccioná el tipo de control a realizar.
+          </p>
+        </div>
+
+        {Object.entries(CONTROLES_CONFIG).map(([id, cfg]) => {
+          const ultimo = ultimosControles[id];
+          const diasDesde = ultimo
+            ? Math.floor((Date.now() - new Date(ultimo.fecha).getTime()) / 86400000)
+            : null;
+          const vencido = diasDesde !== null && diasDesde >= cfg.frecuenciaDias;
+          const proximo = diasDesde !== null && diasDesde >= cfg.frecuenciaDias * 0.75 && !vencido;
+          const estadoColor = !ultimo ? C.muted : vencido ? C.red : proximo ? C.orange : C.green;
+          const estadoLabel = !ultimo ? "Sin registros" : vencido ? `Vencido · hace ${diasDesde}d` : proximo ? `Próximo · ${cfg.frecuenciaDias - diasDesde}d` : `OK · hace ${diasDesde}d`;
+
+          return (
+            <div key={id} style={{ ...card({ padding:"14px 16px", cursor:"pointer", borderLeft:`4px solid ${cfg.color}` }) }}
+              onClick={() => setSubTab(id)}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                <div>
+                  <div style={{ fontWeight:700, fontSize:"14px", color:cfg.color }}>{cfg.label}</div>
+                  <div style={{ fontSize:"10px", color:C.muted, marginTop:"2px" }}>
+                    Cada {cfg.frecuenciaDias === 1 ? "día" : cfg.frecuenciaDias === 7 ? "semana" : cfg.frecuenciaDias === 30 ? "mes" : "3 meses"}
+                    {ultimo && <span> · Último: {ultimo.fecha}</span>}
+                  </div>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <span style={pill(estadoColor, { fontSize:"9px" })}>{estadoLabel}</span>
+                  <div style={{ fontSize:"18px", marginTop:"4px" }}>→</div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <FormControl
+      id={subTab}
+      cfg={CONTROLES_CONFIG[subTab]}
+      toast={toast}
+      operarios={operarios}
+      onBack={() => setSubTab(null)}
+      onEnviado={(id, fecha) => setUltimosControles(prev => ({ ...prev, [id]: { fecha } }))}
+    />
+  );
+}
+
+function FormControl({ id, cfg, toast, operarios, onBack, onEnviado }) {
+  const [operario, setOperario] = useState("");
+  const [datos, setDatos] = useState({});
+  const [obsAbiertas, setObsAbiertas] = useState({});
+  const [repartos, setRepartos] = useState([{ transporte:"", chofer:"", patente:"", temperatura:"" }]);
+  const [enviando, setEnviando] = useState(false);
+
+  const items = cfg.dinamico ? [] : cfg.items;
+
+  function setDato(item, campo, valor) {
+    setDatos(prev => ({ ...prev, [`${item}__${campo}`]: valor }));
+  }
+  function getDato(item, campo) {
+    return datos[`${item}__${campo}`] || "";
+  }
+  function toggleObs(item) {
+    setObsAbiertas(prev => ({ ...prev, [item]: !prev[item] }));
+  }
+
+  async function enviar() {
+    if (!operario) { toast("⚠️ Seleccioná el operario", "error"); return; }
+    setEnviando(true);
+    try {
+      const payload = {
+        tipo_control: id,
+        label: cfg.label,
+        operario,
+        fecha: todayStr(),
+        hora: new Date().toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit" }),
+        items: cfg.dinamico
+          ? repartos.map((r, i) => ({ item: `Reparto ${i+1}`, ...r }))
+          : items.map(item => {
+              const obj = { item };
+              cfg.campos.forEach(c => { obj[c] = getDato(item, c); });
+              obj.observacion = getDato(item, "obs");
+              return obj;
+            }),
+      };
+      await api.post("guardar_control", payload);
+      onEnviado(id, todayStr());
+      toast(`✅ ${cfg.label} enviado`);
+      onBack();
+    } catch { toast("❌ Error al enviar", "error"); }
+    finally { setEnviando(false); }
+  }
+
+  return (
+    <div style={BS}>
+      {/* Header */}
+      <div style={{ display:"flex", alignItems:"center", gap:"10px" }}>
+        <button style={btn({ background:"transparent", color:C.muted, border:`1px solid ${C.bord}`, padding:"6px 12px", fontSize:"12px" })} onClick={onBack}>← Volver</button>
+        <div style={{ fontWeight:700, fontSize:"15px", color:cfg.color }}>{cfg.label}</div>
+      </div>
+
+      {/* Operario */}
+      <div style={card()}>
+        <label style={lbl}>Operario responsable</label>
+        <select style={inp} value={operario} onChange={e => setOperario(e.target.value)}>
+          <option value="">— Seleccionar —</option>
+          {operarios.map(op => <option key={op.id} value={op.nombre}>{op.nombre}</option>)}
+        </select>
+      </div>
+
+      {/* MATAFUEGOS */}
+      {cfg.campos.includes("vencimiento") && (
+        <div style={card()}>
+          <div style={secTit}>🧯 ESTADO DE MATAFUEGOS</div>
+          {items.map(item => (
+            <div key={item} style={{ borderBottom:`1px solid ${C.bord}`, paddingBottom:"12px", marginBottom:"12px" }}>
+              <div style={{ fontWeight:600, fontSize:"13px", marginBottom:"8px" }}>{item}</div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px", marginBottom:"6px" }}>
+                <div>
+                  <label style={lbl}>Vencimiento carga</label>
+                  <input type="date" style={inp} value={getDato(item,"vencimiento")} onChange={e => setDato(item,"vencimiento",e.target.value)} />
+                </div>
+                <div>
+                  <label style={lbl}>Estado carga</label>
+                  <div style={{ display:"flex", gap:"6px" }}>
+                    {["OK","Falta carga"].map(est => (
+                      <button key={est}
+                        style={btn({ background: getDato(item,"estado_carga")===est ? (est==="OK"?C.green:C.red) : "transparent",
+                          color: getDato(item,"estado_carga")===est ? (est==="OK"?"#0a0c10":"#fff") : C.muted,
+                          border:`1px solid ${getDato(item,"estado_carga")===est ? (est==="OK"?C.green:C.red) : C.bord}`,
+                          flex:1, fontSize:"11px", padding:"8px 4px" })}
+                        onClick={() => setDato(item,"estado_carga",est)}>{est}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <button style={btn({ background:"transparent", color:C.muted, border:`1px solid ${C.bord}`, fontSize:"11px", padding:"5px 10px" })}
+                onClick={() => toggleObs(item)}>
+                {obsAbiertas[item] ? "▲ Ocultar obs." : "📝 Agregar observación"}
+              </button>
+              {obsAbiertas[item] && (
+                <input style={{ ...inp, marginTop:"6px" }} placeholder="Observación..." value={getDato(item,"obs")} onChange={e => setDato(item,"obs",e.target.value)} />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* RACKS / EQUIPOS / LIMPIEZA — estado simple */}
+      {cfg.campos.includes("estado") && !cfg.campos.includes("vencimiento") && (
+        <div style={card()}>
+          <div style={secTit}>ESTADO</div>
+          {items.map(item => (
+            <div key={item} style={{ borderBottom:`1px solid ${C.bord}`, paddingBottom:"10px", marginBottom:"10px" }}>
+              <div style={{ fontWeight:600, fontSize:"13px", marginBottom:"8px" }}>{item}</div>
+              <div style={{ display:"flex", gap:"6px", marginBottom:"6px" }}>
+                {["OK","Observación"].map(est => (
+                  <button key={est}
+                    style={btn({ background: getDato(item,"estado")===est ? (est==="OK"?C.green:C.orange) : "transparent",
+                      color: getDato(item,"estado")===est ? (est==="OK"?"#0a0c10":"#fff") : C.muted,
+                      border:`1px solid ${getDato(item,"estado")===est ? (est==="OK"?C.green:C.orange) : C.bord}`,
+                      flex:1, fontSize:"12px", padding:"10px" })}
+                    onClick={() => { setDato(item,"estado",est); if(est==="Observación") setObsAbiertas(p=>({...p,[item]:true})); }}>{est}</button>
+                ))}
+              </div>
+              {(obsAbiertas[item] || getDato(item,"estado")==="Observación") && (
+                <input style={inp} placeholder="Descripción de la observación..." value={getDato(item,"obs")} onChange={e => setDato(item,"obs",e.target.value)} />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* TEMPERATURA EN RUTA */}
+      {id === "temp_ruta" && (
+        <div style={card()}>
+          <div style={secTit}>🌡️ TEMPERATURAS</div>
+          {items.map(item => (
+            <div key={item} style={{ display:"flex", alignItems:"center", gap:"10px", borderBottom:`1px solid ${C.bord}`, paddingBottom:"10px", marginBottom:"10px" }}>
+              <div style={{ flex:1, fontWeight:600, fontSize:"13px" }}>{item}</div>
+              <div style={{ width:"100px" }}>
+                <input type="number" inputMode="decimal" style={{ ...inp, textAlign:"center", fontSize:"18px", fontWeight:700 }}
+                  placeholder="°C" value={getDato(item,"temperatura")} onChange={e => setDato(item,"temperatura",e.target.value)} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* TEMPERATURA CONGELADOS — dinámico */}
+      {id === "temp_congelados" && (
+        <div style={card()}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"10px" }}>
+            <div style={secTit}>🧊 REPARTOS</div>
+            <button style={btn({ background:C.accent, color:"#fff", fontSize:"12px", padding:"6px 12px" })}
+              onClick={() => setRepartos(prev => [...prev, { transporte:"", chofer:"", patente:"", temperatura:"" }])}>
+              + Agregar
+            </button>
+          </div>
+          {repartos.map((r, i) => (
+            <div key={i} style={{ background:C.surf2, borderRadius:"10px", padding:"12px", marginBottom:"10px" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:"8px" }}>
+                <div style={{ fontWeight:700, fontSize:"13px", color:C.blue }}>Reparto {i+1}</div>
+                {repartos.length > 1 && (
+                  <button style={btn({ background:"transparent", color:C.red, border:`1px solid ${C.red}`, padding:"2px 8px", fontSize:"11px" })}
+                    onClick={() => setRepartos(prev => prev.filter((_,j)=>j!==i))}>✕</button>
+                )}
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"8px" }}>
+                {[["transporte","Transporte"],["chofer","Chofer"],["patente","Patente"]].map(([campo,label]) => (
+                  <div key={campo}>
+                    <label style={lbl}>{label}</label>
+                    <input style={inp} value={r[campo]} onChange={e => setRepartos(prev => prev.map((x,j)=>j===i?{...x,[campo]:e.target.value}:x))} />
+                  </div>
+                ))}
+                <div>
+                  <label style={lbl}>Temperatura °C</label>
+                  <input type="number" inputMode="decimal" style={{ ...inp, fontSize:"20px", fontWeight:700, textAlign:"center" }}
+                    placeholder="°C" value={r.temperatura}
+                    onChange={e => setRepartos(prev => prev.map((x,j)=>j===i?{...x,temperatura:e.target.value}:x))} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* MANTENIMIENTO VEHÍCULOS */}
+      {id === "mantenimiento_vehiculos" && (
+        <div style={card()}>
+          <div style={secTit}>🚛 VEHÍCULO</div>
+          <label style={lbl}>Seleccionar vehículo</label>
+          <select style={{ ...inp, marginBottom:"16px" }}
+            value={getDato("vehiculo","nombre")} onChange={e => setDato("vehiculo","nombre",e.target.value)}>
+            <option value="">— Seleccionar —</option>
+            {cfg.items.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+          {getDato("vehiculo","nombre") && (
+            <>
+              <div style={secTit}>CHECKLIST</div>
+              {CHECKLIST_VEHICULO.map(item => (
+                <div key={item} style={{ borderBottom:`1px solid ${C.bord}`, paddingBottom:"10px", marginBottom:"10px" }}>
+                  <div style={{ fontWeight:600, fontSize:"13px", marginBottom:"8px" }}>{item}</div>
+                  <div style={{ display:"flex", gap:"6px", marginBottom:"6px" }}>
+                    {["OK","Observación"].map(est => (
+                      <button key={est}
+                        style={btn({ background: getDato(item,"estado")===est ? (est==="OK"?C.green:C.orange) : "transparent",
+                          color: getDato(item,"estado")===est ? (est==="OK"?"#0a0c10":"#fff") : C.muted,
+                          border:`1px solid ${getDato(item,"estado")===est ? (est==="OK"?C.green:C.orange) : C.bord}`,
+                          flex:1, fontSize:"12px", padding:"10px" })}
+                        onClick={() => { setDato(item,"estado",est); if(est==="Observación") setObsAbiertas(p=>({...p,[item]:true})); }}>{est}</button>
+                    ))}
+                  </div>
+                  {(obsAbiertas[item] || getDato(item,"estado")==="Observación") && (
+                    <input style={inp} placeholder="Descripción..." value={getDato(item,"obs")} onChange={e => setDato(item,"obs",e.target.value)} />
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* BOTÓN ENVIAR */}
+      <div style={card()}>
+        <button
+          style={btn({ background: enviando ? C.surf2 : `linear-gradient(135deg,${C.green},#059669)`,
+            color: enviando ? C.muted : "#0a0c10", fontWeight:700, width:"100%", fontSize:"14px", padding:"14px",
+            opacity: enviando ? 0.7 : 1 })}
+          disabled={enviando}
+          onClick={enviar}
+        >
+          {enviando ? "⏳ Enviando..." : "📤 ENVIAR AL SHEET"}
+        </button>
+      </div>
+    </div>
+  );
+}
 // ═══════════════════════════════════════════════════════════════
 // APP PRINCIPAL
 // ═══════════════════════════════════════════════════════════════
@@ -6420,6 +6997,8 @@ export default function App() {
       { id:"stock", icon:"🏭", label:"Stock", color:C.orange, desc:"Conteo e inventario", disabled:false },
       { id:"operarios", icon:"👷", label:"Operarios",  color:C.gold,    desc:"Gestionar equipo" },
       { id:"metricas",  icon:"📊", label:"Métricas",   color:C.red,     desc:"Ver rendimiento" },
+      { id:"roturas",   icon:"⚠️", label:"Roturas",    color:"#e91e63", desc:"Rotura y vencimientos" },
+      { id:"controles", icon:"📋", label:"Controles",  color:"#00bcd4", desc:"Controles operativos" },
     ];
     return (
       <div style={{ background:C.bg, minHeight:"100vh", color:C.text, fontFamily:"system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
@@ -6511,6 +7090,8 @@ export default function App() {
       {tab === "recepcion" && <ModRecepcion toast={showToast} operarios={operarios} />}
       {tab === "operarios" && <ModOperarios operarios={operarios} setOperarios={setOperarios} toast={showToast} />}
       {tab === "metricas" && <ModMetricas toast={showToast} cons={cons} prods={prods} />}
+      {tab === "roturas" && <ModRoturas toast={showToast} operarios={operarios} />}
+      {tab === "controles" && <ModControles toast={showToast} operarios={operarios} />}
     </div>
   );
 }
