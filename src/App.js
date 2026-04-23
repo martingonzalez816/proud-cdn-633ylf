@@ -4407,13 +4407,10 @@ return {
               padding: "16px",
               opacity: todasListas ? 1 : 0.6,
             })}
-disabled={false}
-onClick={() => {
-  if (!todasListas) {
-    if (!window.confirm(`Faltan ${total - marcadas} productos sin marcar. ¿Finalizar igual?`)) return;
-  }
-  finalizarMiParte();
-}}
+            disabled={!todasListas}
+            onClick={() => {
+              finalizarMiParte();
+            }}
           >
             {todasListas ? "✅ FINALIZAR MI PARTE" : `⏳ Faltan ${total - marcadas} productos`}
           </button>
