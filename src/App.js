@@ -5151,8 +5151,8 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
         const opDueño = (c.activeOps || []).find(op =>
           (op.divisiones || []).includes(lineaBloq?.seccion)
         );
-        if (opDueño && !opDueño.finished) {
-          toast(`⚠️ ${opDueño.nombre} aún no finalizó su parte`, "error");
+        if (opDueño && !opDueño.finished && lineaBloq?.estado !== "armado") {
+          toast(`⚠️ ${opDueño.nombre} aún no marcó este producto`, "error");
           return;
         }
       }
@@ -5761,7 +5761,7 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
                       const opDueño = (c.activeOps || []).find(op =>
                         (op.divisiones || []).includes(line.seccion)
                       );
-                      const bloqueado = opDueño && !opDueño.finished;
+                      const bloqueado = opDueño && !opDueño.finished && line.estado !== "armado";
                       return bloqueado ? (
                         <span style={pill(C.orange)}>⏳ {opDueño.nombre}</span>
                       ) : (
