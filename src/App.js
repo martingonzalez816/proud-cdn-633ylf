@@ -5141,56 +5141,55 @@ function ModControl({ toast, operarios, cons, setCons, sincronizar }) {
     : 0;
 
     function markLine(lid, estado, motivo = null) {
-  if (!ctrl && estado) {
-    toast("⚠️ Seleccioná el controlador primero", "error");
-    return;
-  }
-  // Verificar si la línea pertenece a un operario que no finalizó
-  if (estado) {
-    const line = c.lines.find(l => l.id === lid);
-    const opDueño = (c.activeOps || []).find(op =>
-      (op.divisiones || []).includes(line?.seccion)
-    );
-    if (opDueño && !opDueño.finished) {
-      toast(`⚠️ ${opDueño.nombre} aún no finalizó su parte`, "error");
-      return;
+      if (!ctrl && estado) {
+        toast("⚠️ Seleccioná el controlador primero", "error");
+        return;
+      }
+      // Verificar si la línea pertenece a un operario que no finalizó
+      if (estado) {
+        const lineaBloq = c.lines.find(l => l.id === lid);
+        const opDueño = (c.activeOps || []).find(op =>
+          (op.divisiones || []).includes(lineaBloq?.seccion)
+        );
+        if (opDueño && !opDueño.finished) {
+          toast(`⚠️ ${opDueño.nombre} aún no finalizó su parte`, "error");
+          return;
+        }
+      }
+      setCons((cs) =>
+        cs.map((x) =>
+          String(x.id) !== String(currentId)
+            ? x
+            : {
+                ...x,
+                lines: x.lines.map((l) =>
+                  l.id !== lid
+                    ? l
+                    : {
+                        ...l,
+                        estado,
+                        motivo,
+                        operario: l.operario || "—",
+                        controlador: ctrl || "Controlador",
+                        ts: Date.now(),
+                      }
+                ),
+              }
+        )
+      );
+      const lineaPost = c.lines.find((l) => l.id === lid);
+      if (lineaPost && estado) {
+        api.post("actualizar_linea", {
+          consId: String(currentId),
+          codigo: lineaPost.codigo,
+          descripcion: lineaPost.descripcion,
+          estado,
+          motivo: motivo || "",
+          operario: lineaPost.operario || "—",
+          controlador: ctrl || "Controlador",
+        });
+      }
     }
-  }
-  setCons((cs) =>
-    cs.map((x) =>
-      String(x.id) !== String(currentId)
-        ? x
-        : {
-            ...x,
-            lines: x.lines.map((l) =>
-              l.id !== lid
-                ? l
-                : {
-                    ...l,
-                    estado,
-                    motivo,
-                    operario: l.operario || "—",
-                    controlador: ctrl || "Controlador",
-                    ts: Date.now(),
-                  }
-            ),
-          }
-    )
-  );
-  const c = cons.find((x) => x.id === currentId);
-  const line = c?.lines.find((l) => l.id === lid);
-  if (line && estado) {
-    api.post("actualizar_linea", {
-      consId: String(currentId),
-      codigo: line.codigo,
-      descripcion: line.descripcion,
-      estado,
-      motivo: motivo || "",
-      operario: line.operario || "—",
-      controlador: ctrl || "Controlador",
-    });
-  }
-}
   function cerrar(sigData) {
     const now = Date.now();
     const c = cons.find((x) => x.id === currentId);
