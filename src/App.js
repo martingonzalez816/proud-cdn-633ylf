@@ -337,7 +337,7 @@ function parseXLS(text) {
 
   for (let i = 0; i < lines.length; i++) {
     const row = lines[i];
-    if (!row || !row[0]) continue;
+    if (!row || row.every(c => !c)) continue;
     const first = (row[0] || "").trim();
     if (first && first.includes("COMBO")) console.log("COMBO encontrado:", JSON.stringify(row));
 
@@ -403,41 +403,25 @@ function parseXLS(text) {
     // REEMPLAZAR este bloque en parseXLS (desde "if (current && codigoLimpio" hasta "});")
 
     if (current && codigoLimpio && /^[A-Za-z0-9]+$/.test(codigoLimpio) && row[2]) {
-      const buQty = parseFloat(row[5] || "0") || 0; // col F — cantidad BU
-      const venQty = parseFloat(row[7] || "0") || 0; // col H — cantidad venta (UN sueltas)
-      const venUnit = row[8] || row[4] || "UN"; // col I — unidad de venta
-
-      // Regla directa del XLS Arcor:
-      // col F = BU, col H = unidades sueltas adicionales
-      // Si BU=0 → solo col H en su unidad
-      // Si BU>0 y col H=0 → solo BU
-      // Si BU>0 y col H>0 → BU como principal, col H como bu (unidades sueltas)
-
+      const buQty = parseFloat(row[5] || "0") || 0;
+      const venQty = parseFloat(row[7] || "0") || 0;
+      const venUnit = row[8] || row[4] || "UN";
+    
       let qty, unit, bu;
-
+    
       if (buQty > 0 && venQty > 0) {
-        // LATA MEMBRILLO: 1 BU · 2 UN — pickear 1 BU y 2 unidades sueltas
-        qty = String(buQty);
-        unit = "BU";
-        bu = String(venQty); // unidades sueltas adicionales
+        qty = String(buQty); unit = "BU"; bu = String(venQty);
       } else if (buQty > 0 && venQty === 0) {
-        // PURE DE TOMATE: 3 BU — pickear solo bultos
-        qty = String(buQty);
-        unit = "BU";
-        bu = "0";
+        qty = String(buQty); unit = "BU"; bu = "0";
       } else {
-        // MERM FRUTOS ROJOS: 2 UN — pickear unidades, sin BU
-        qty = String(venQty);
-        unit = venUnit;
-        bu = "0";
+        qty = String(venQty); unit = venUnit; bu = "0";
       }
-
+    
+      const pasillo = (row[0] || "").trim() || "S/U";
+    
       current.products.push({
-        id: `${(row[0] || "x").replace(
-          /[^a-z0-9]/gi,
-          ""
-        )}-${codigoLimpio}-${i}`,
-        pasillo: row[0] || "",
+        id: `${pasillo.replace(/[^a-z0-9]/gi,"")}-${codigoLimpio}-${i}`,
+        pasillo,
         codigo: codigoLimpio,
         descripcion: row[2],
         bu,
@@ -2820,7 +2804,7 @@ function parseDespachoCSV(text) {
 
   for (let i = 0; i < lines.length; i++) {
     const row = lines[i];
-    if (!row || !row[0]) continue;
+    if (!row || row.every(c => !c)) continue;
     if (row[0].includes("Nro. de Carga:")) {
       info.nroCarga = row[1] || "";
       const fd = row[4] || "";
@@ -3031,6 +3015,35 @@ function ModRecepcion({ toast, operarios }) {
       )}
     </div>
   );
+  function confirmarModal(cant, venc) {
+    if (!modalProd) return;
+    const { idx, prod } = modalProd;
+    // Actualizar cantidad
+    const prods = [...despacho.productos];
+    const cantNum = parseInt(cant) || 0;
+    const estado = cantNum === prod.cantEsperada ? "ok" : cantNum > 0 ? "diferencia" : "pendiente";
+    prods[idx] = { 
+      ...prods[idx], 
+      cantReal: cantNum, 
+      estado, 
+      vencimiento: venc || prods[idx].vencimiento,
+      escaneado: true,
+      _ts: Date.now() 
+    };
+    const actualizado = { ...despacho, productos: prods };
+    guardarDespacho(actualizado);
+    // Enviar al Sheet inmediatamente
+    api.post("recepcion_despacho", { 
+      info: actualizado.info, 
+      operario, 
+      productos: actualizado.productos, 
+      timestamp: new Date().toISOString() 
+    });
+    setModalProd(null);
+    setModalCant("");
+    setModalVenc("");
+    toast(`✅ ${prod.descripcion.slice(0,30)} · ${cantNum} ${prod.unidad}`);
+  }
 
   // ── TAB CONTROL ──────────────────────────────────────────
   if (tab === "control" && despacho) {
