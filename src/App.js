@@ -6876,6 +6876,649 @@ function FormControl({ id, cfg, toast, operarios, onBack, onEnviado }) {
   );
 }
 // ═══════════════════════════════════════════════════════════════
+// MÓDULO TAREAS — calendario, checklist, preavisos y mapa de actividades
+// ═══════════════════════════════════════════════════════════════
+const TAREAS_INICIO = "2026-10-20"; // antes de esta fecha nada cuenta como atrasado
+const DIAS_SEM = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+const MESES_TXT = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+
+const tPad = (n) => String(n).padStart(2, "0");
+const tYmd = (d) => `${d.getFullYear()}-${tPad(d.getMonth() + 1)}-${tPad(d.getDate())}`;
+const tParse = (s) => { const [y, m, d] = String(s).split("-").map(Number); return new Date(y, m - 1, d); };
+const tAdd = (s, n) => { const d = tParse(s); d.setDate(d.getDate() + n); return tYmd(d); };
+const tHoy = () => tYmd(new Date()); // fecha LOCAL (no UTC)
+const tFechaTxt = (s) => { const d = tParse(s); return `${DIAS_SEM[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`; };
+
+// Devuelve [{fecha, titulo}] de una actividad entre dos fechas (inclusive)
+function tOcurrencias(act, desde, hasta) {
+  const out = [];
+  if (!act || act.activa === false) return out;
+  const r = act.recurrencia || {};
+  if (r.tipo === "fechas") {
+    (act.fechas || []).forEach((f) => {
+      if (f.fecha >= desde && f.fecha <= hasta) out.push({ fecha: f.fecha, titulo: f.titulo || act.nombre });
+    });
+    return out;
+  }
+  for (let s = desde; s <= hasta; s = tAdd(s, 1)) {
+    const d = tParse(s), dow = d.getDay(), dom = d.getDate();
+    const ultimo = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    let ok = false;
+    if (r.tipo === "semanal") ok = (r.dias || []).map(Number).includes(dow);
+    else if (r.tipo === "mensual") ok = dom === Math.min(Number(r.dia) || 1, ultimo);
+    else if (r.tipo === "mensual_semana") {
+      if (dow === Number(r.diaSemana)) ok = Number(r.semana) === -1 ? dom + 7 > ultimo : Math.ceil(dom / 7) === Number(r.semana);
+    } else if (r.tipo === "cada_n") {
+      if (r.desde && s >= r.desde) {
+        const diff = Math.round((d - tParse(r.desde)) / 86400000);
+        ok = diff % Math.max(1, Number(r.n) || 1) === 0;
+      }
+    }
+    if (ok) out.push({ fecha: s, titulo: act.nombre });
+  }
+  return out;
+}
+
+function tFrecTxt(act) {
+  const r = act.recurrencia || {};
+  if (r.tipo === "semanal") {
+    const d = (r.dias || []).map(Number).sort();
+    if (d.length === 7) return "Todos los días";
+    if (d.join() === "1,2,3,4,5") return "Lunes a viernes";
+    if (d.join() === "1,2,3,4,5,6") return "Lunes a sábado";
+    return "Semanal · " + d.map((x) => DIAS_SEM[x]).join(", ");
+  }
+  if (r.tipo === "mensual") return `Mensual · día ${r.dia}`;
+  if (r.tipo === "mensual_semana") {
+    const n = { 1: "1er", 2: "2do", 3: "3er", 4: "4to", "-1": "último" }[r.semana];
+    return `Mensual · ${n} ${DIAS_SEM[r.diaSemana]}`;
+  }
+  if (r.tipo === "cada_n") return `Cada ${r.n} días`;
+  if (r.tipo === "fechas") return `Fechas puntuales (${(act.fechas || []).length})`;
+  return "—";
+}
+
+// Arma la lista de tareas (instancias) entre dos fechas, con estado
+function tInstancias(actividades, registro, desde, hasta) {
+  const hoy = tHoy();
+  const reg = {};
+  (registro || []).forEach((r) => { reg[r.key] = r; });
+  const out = [];
+  (actividades || []).forEach((act) => {
+    const inicio = act.creada && act.creada > TAREAS_INICIO ? act.creada : TAREAS_INICIO;
+    tOcurrencias(act, desde < inicio ? inicio : desde, hasta).forEach((o) => {
+      const key = `${act.id}_${o.fecha}`;
+      const r = reg[key];
+      const preaviso = Number(act.preavisoDias) || 0;
+      let estado;
+      if (r) estado = r.estado === "con_observaciones" ? "observada" : "hecha";
+      else if (o.fecha < hoy) estado = "atrasada";
+      else if (o.fecha === hoy) estado = "hoy";
+      else if (o.fecha <= tAdd(hoy, preaviso)) estado = "preaviso";
+      else estado = "futura";
+      out.push({ key, act, fecha: o.fecha, titulo: o.titulo, estado, reg: r });
+    });
+  });
+  return out.sort((a, b) => (a.fecha === b.fecha ? (a.act.hora || "").localeCompare(b.act.hora || "") : a.fecha.localeCompare(b.fecha)));
+}
+
+const T_EST = {
+  hecha:     { l: "Hecha",       c: C.green },
+  observada: { l: "Con obs.",    c: C.yellow },
+  atrasada:  { l: "Atrasada",    c: C.red },
+  hoy:       { l: "Hoy",         c: C.orange },
+  preaviso:  { l: "Próxima",     c: C.blue },
+  futura:    { l: "Programada",  c: C.muted },
+};
+
+function tResumen(actividades, registro) {
+  const hoy = tHoy();
+  const lista = tInstancias(actividades, registro, tAdd(hoy, -14), tAdd(hoy, 14));
+  // de cada actividad solo cuenta la ÚLTIMA vez que quedó sin hacer (no se acumulan las diarias)
+  const ult = {};
+  lista.filter((t) => t.estado === "atrasada").forEach((t) => { ult[t.act.id] = t; });
+  return {
+    atrasadas: Object.values(ult).sort((a, b) => a.fecha.localeCompare(b.fecha)),
+    hoy: lista.filter((t) => t.estado === "hoy"),
+    proximas: lista.filter((t) => t.estado === "preaviso"),
+  };
+}
+
+const ACTIVIDADES_INICIALES = [
+  {
+    id: "stock_rotativo", nombre: "Control de stock rotativo", icono: "🏭", color: "#ff8c42",
+    recurrencia: { tipo: "fechas" }, hora: "08:00", preavisoDias: 2, emails: "", activa: true, controlId: "",
+    checklist: ["Imprimir/abrir planilla del sector", "Contar unidades por código", "Registrar diferencias en módulo Stock", "Revisar vencimientos del sector", "Ordenar y rotular estanterías"],
+    fechas: [
+    ["2026-10-03","Stock Harinas"],
+    ["2026-10-10","Stock Alim. Arcor 1"],
+    ["2026-10-17","Stock Alim. Arcor 2"],
+    ["2026-10-24","Stock Alim. La Campa"],
+    ["2026-10-31","Stock Golosinas 1"],
+    ["2026-11-07","Stock Golosinas 2"],
+    ["2026-11-14","Stock Alfajores"],
+    ["2026-11-21","Stock Chocolates 1"],
+    ["2026-11-28","Stock Chocolates 2"],
+    ["2026-12-05","Stock Helados"],
+    ["2026-12-12","Stock Bagley"],
+    ["2026-12-19","Stock Harinas"],
+    ["2026-12-26","Stock Alim. Arcor 1"],
+    ["2027-01-02","Stock Alim. Arcor 2"],
+    ["2027-01-09","Stock La Campagnola"],
+    ["2027-01-16","Stock Golosinas 1"],
+    ["2027-01-23","Stock Golosinas 2"],
+    ["2027-01-30","Stock Alfajores"],
+    ["2027-02-06","Stock Chocolates 1"],
+    ["2027-02-13","Stock Chocolates 2"],
+    ["2027-02-20","Stock Helados"],
+    ["2027-02-27","Stock Bagley"],
+    ["2027-03-06","Stock Harinas"],
+    ["2027-03-13","Stock Alimentos 1"],
+    ["2027-03-20","Stock Alimentos 2"],
+    ["2027-03-27","Stock La Campagnola"],
+    ["2027-04-03","Stock Golosinas 1"],
+    ["2027-04-10","Stock Golosinas 2"],
+    ["2027-04-17","Stock Alfajores"],
+    ["2027-04-24","Stock Chocolates 1"],
+    ["2027-05-01","Stock Chocolates 2"],
+    ["2027-05-08","Stock Helados"],
+    ["2027-05-15","Stock Bagley"],
+    ["2027-05-22","Stock Harinas"],
+    ["2027-05-29","Stock Alimentos 1"],
+    ["2027-06-05","Stock Alimentos 2"],
+    ["2027-06-12","Stock La Campagnola"],
+    ["2027-06-19","Stock Golosinas 1"],
+    ["2027-06-26","Stock Golosinas 2"],
+    ["2027-07-03","Stock Alfajores"],
+    ["2027-07-10","Stock Chocolates 1"],
+    ["2027-07-17","Stock Chocolates 2"],
+    ["2027-07-24","Stock Bagley"],
+    ["2027-07-31","Stock Harinas"],
+    ["2027-08-07","Stock Alimentos 1"],
+    ["2027-08-14","Stock Alimentos 2"],
+    ["2027-08-21","Stock La Campagnola"],
+    ["2027-08-28","Stock Golosinas 1"],
+    ["2027-09-04","Stock Golosinas 2"],
+    ["2027-09-11","Stock Alfajores"],
+    ["2027-09-18","Stock Chocolates 1"],
+    ["2027-09-25","Stock Chocolates 2"],
+    ["2027-10-02","Stock Bagley"],
+    ["2027-10-09","Stock Harinas"],
+    ["2027-10-16","Stock Alimentos 1"],
+    ["2027-10-23","Stock Alimentos 2"],
+    ["2027-10-30","Stock La Campagnola"],
+    ["2027-11-06","Stock Golosinas 1"],
+    ["2027-11-13","Stock Golosinas 2"],
+    ["2027-11-20","Stock Alfajores"],
+    ["2027-11-27","Stock Chocolates 1"],
+    ["2027-12-04","Stock Chocolates 2"],
+    ["2027-12-11","Stock Bagley"],
+    ["2027-12-18","Stock Harinas"]
+    ].map(([fecha, titulo]) => ({ fecha, titulo })),
+  },
+  {
+    id: "temperatura", nombre: "Reporte de temperatura", icono: "🌡️", color: "#00838f",
+    recurrencia: { tipo: "mensual_semana", semana: 1, diaSemana: 1 }, hora: "08:00", preavisoDias: 2, emails: "", activa: true, controlId: "temp_ruta",
+    checklist: ["Registrar temperatura de cámaras", "Registrar temperatura de vehículos", "Enviar reporte mensual"],
+  },
+  {
+    id: "racks", nombre: "Control de racks", icono: "🏗️", color: "#7b1fa2",
+    recurrencia: { tipo: "cada_n", n: 90, desde: "2026-10-01" }, hora: "09:00", preavisoDias: 7, emails: "", activa: true, controlId: "racks",
+    checklist: ["Completar formulario de racks", "Fotografiar daños si los hay"],
+  },
+  {
+    id: "matafuegos", nombre: "Control de matafuegos", icono: "🧯", color: "#e53935",
+    recurrencia: { tipo: "cada_n", n: 90, desde: "2026-10-01" }, hora: "09:00", preavisoDias: 7, emails: "", activa: true, controlId: "matafuegos",
+    checklist: ["Completar formulario de matafuegos", "Agendar recarga de los vencidos"],
+  },
+  {
+    id: "limpieza", nombre: "Limpieza general", icono: "🧹", color: "#2e7d32",
+    recurrencia: { tipo: "semanal", dias: [5] }, hora: "15:00", preavisoDias: 1, emails: "", activa: true, controlId: "limpieza",
+    checklist: ["Baños", "Pasillos y piso de depósito", "Sector de control", "Desagües", "Vaciar cestos"],
+  },
+  {
+    id: "residuos", nombre: "Retiro de residuos", icono: "🗑️", color: "#607d8b",
+    recurrencia: { tipo: "semanal", dias: [1, 3, 5] }, hora: "17:00", preavisoDias: 0, emails: "", activa: true, controlId: "",
+    checklist: ["Separar cartón y film", "Sacar bolsas al punto de retiro", "Limpiar sector de residuos"],
+  },
+  {
+    id: "vencimientos", nombre: "Control de vencimientos", icono: "📆", color: "#e91e63",
+    recurrencia: { tipo: "semanal", dias: [3] }, hora: "10:00", preavisoDias: 1, emails: "", activa: true, controlId: "",
+    checklist: ["Revisar productos con vencimiento < 30 días", "Mover próximos a vencer al frente (FEFO)", "Cargar vencidos en módulo Roturas"],
+  },
+  {
+    id: "clark", nombre: "Mantenimiento clark", icono: "🚜", color: "#4e342e",
+    recurrencia: { tipo: "mensual_semana", semana: 1, diaSemana: 3 }, hora: "09:00", preavisoDias: 3, emails: "", activa: true, controlId: "mantenimiento_equipos",
+    checklist: ["Nivel de aceite hidráulico", "Frenos", "Neumáticos", "Horquillas y cadenas", "Luces y bocina"],
+  },
+  {
+    id: "baterias", nombre: "Carga de baterías", icono: "🔋", color: "#ffd166",
+    recurrencia: { tipo: "semanal", dias: [1, 2, 3, 4, 5, 6] }, hora: "18:00", preavisoDias: 0, emails: "", activa: true, controlId: "",
+    checklist: ["Clark conectado al cargador", "Apiladores conectados", "Verificar luz de carga encendida"],
+  },
+];
+
+// ── Hook compartido: lo usa App (alertas) y ModTareas ─────────
+function useTareas() {
+  const [actividades, setActividades] = useDB("rosarc_tareas_act_v1", ACTIVIDADES_INICIALES);
+  const [registro, setRegistro] = useDB("rosarc_tareas_reg_v1", []);
+  const [cargando, setCargando] = useState(false);
+
+  const recargar = useCallback(async () => {
+    if (APPS_SCRIPT_URL.includes("TU_URL_AQUI")) return;
+    setCargando(true);
+    try {
+      const d = await fetch(`${APPS_SCRIPT_URL}?accion=leer_tareas`).then((r) => r.json());
+      if (d.status === "ok") {
+        if (Array.isArray(d.actividades)) setActividades(d.actividades); // la fuente es la pestaña "Tareas" del Sheet
+        if (Array.isArray(d.registro)) {
+          setRegistro((prev) => {
+            const m = {};
+            prev.forEach((r) => { m[r.key] = r; });
+            d.registro.forEach((r) => { m[r.key] = r; });
+            return Object.values(m);
+          });
+        }
+      }
+    } catch {}
+    setCargando(false);
+  }, [setActividades, setRegistro]);
+
+  useEffect(() => {
+    recargar();
+    const t = setInterval(recargar, 5 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [recargar]);
+
+  const registrar = useCallback((entry) => {
+    setRegistro((prev) => [...prev.filter((r) => r.key !== entry.key), entry]);
+    api.post("finalizar_tarea", entry);
+  }, [setRegistro]);
+
+  return { actividades, registro, recargar, cargando, registrar };
+}
+
+// ── Notificaciones del navegador (con la app abierta) ─────────
+function tNotificar(titulo, cuerpo, tag) {
+  try {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    try { new Notification(titulo, { body: cuerpo, tag }); }
+    catch {
+      if (navigator.serviceWorker) navigator.serviceWorker.getRegistration().then((reg) => reg && reg.showNotification(titulo, { body: cuerpo, tag }));
+    }
+  } catch {}
+}
+
+function useAlertasTareas(actividades, registro) {
+  useEffect(() => {
+    function chequear() {
+      let enviados = {};
+      try { enviados = JSON.parse(localStorage.getItem("rosarc_tareas_notif_v1") || "{}"); } catch {}
+      const hoy = tHoy(), ahora = new Date().toTimeString().slice(0, 5);
+      const { atrasadas, hoy: deHoy, proximas } = tResumen(actividades, registro);
+      const aviso = (id, tit, txt) => { if (enviados[id] !== hoy) { tNotificar(tit, txt, id); enviados[id] = hoy; } };
+      if (atrasadas.length) aviso("atrasadas", `⚠️ ${atrasadas.length} tarea(s) atrasada(s)`, atrasadas.slice(0, 4).map((t) => `${t.titulo} (${tFechaTxt(t.fecha)})`).join("\n"));
+      deHoy.forEach((t) => { if (!t.act.hora || t.act.hora <= ahora) aviso(t.key, `${t.act.icono || "📋"} ${t.titulo}`, `Hoy${t.act.hora ? " · " + t.act.hora : ""} — tocá para abrir el checklist`); });
+      if (proximas.length) aviso("proximas", `📅 Próximas tareas`, proximas.slice(0, 4).map((t) => `${tFechaTxt(t.fecha)} · ${t.titulo}`).join("\n"));
+      // limpiar claves viejas
+      Object.keys(enviados).forEach((k) => { if (enviados[k] !== hoy) delete enviados[k]; });
+      try { localStorage.setItem("rosarc_tareas_notif_v1", JSON.stringify(enviados)); } catch {}
+    }
+    chequear();
+    const t = setInterval(chequear, 60 * 1000);
+    return () => clearInterval(t);
+  }, [actividades, registro]);
+}
+
+// ── Banner para la pantalla de inicio ─────────────────────────
+function BannerTareas({ actividades, registro, onAbrir }) {
+  const { atrasadas, hoy, proximas } = tResumen(actividades, registro);
+  if (!atrasadas.length && !hoy.length && !proximas.length) return null;
+  const col = atrasadas.length ? C.red : hoy.length ? C.orange : C.blue;
+  return (
+    <button onClick={onAbrir} style={{ ...card({ borderColor: col, background: `${col}12`, padding: "12px 14px", marginBottom: "14px", textAlign: "left", cursor: "pointer", color: C.text, width: "100%" }) }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+        <div style={{ fontSize: "12px", fontWeight: 700, color: col }}>📅 TAREAS</div>
+        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+          {atrasadas.length > 0 && <span style={pill(C.red)}>{atrasadas.length} atrasada{atrasadas.length > 1 ? "s" : ""}</span>}
+          {hoy.length > 0 && <span style={pill(C.orange)}>{hoy.length} hoy</span>}
+          {proximas.length > 0 && <span style={pill(C.blue)}>{proximas.length} próxima{proximas.length > 1 ? "s" : ""}</span>}
+        </div>
+      </div>
+      <div style={{ fontSize: "11px", color: C.muted, marginTop: "6px" }}>
+        {[...atrasadas, ...hoy, ...proximas].slice(0, 3).map((t) => `${t.act.icono || ""} ${t.titulo} · ${tFechaTxt(t.fecha)}`).join("  ·  ")}
+      </div>
+    </button>
+  );
+}
+
+// ── Fila de tarea ─────────────────────────────────────────────
+function FilaTarea({ t, onClick }) {
+  const e = T_EST[t.estado];
+  return (
+    <div onClick={onClick} style={{ ...card({ padding: "12px 14px", cursor: "pointer", borderLeft: `4px solid ${t.act.color || C.blue}` }) }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: "14px" }}>{t.act.icono} {t.titulo}</div>
+          <div style={{ fontSize: "11px", color: C.muted, marginTop: "2px" }}>
+            {tFechaTxt(t.fecha)}{t.act.hora ? ` · ${t.act.hora}` : ""} · {(t.act.checklist || []).length} ítems
+            {t.reg && ` · ${t.reg.operario} ${t.reg.hora || ""}`}
+          </div>
+        </div>
+        <span style={pill(e.c)}>{e.l}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Ejecutar una tarea (checklist) ────────────────────────────
+function EjecutarTarea({ t, operarios, toast, onBack, onFinalizar }) {
+  const [prog, setProg] = useDB("rosarc_tareas_prog_v1", {});
+  const [verForm, setVerForm] = useState(false);
+  const p = prog[t.key] || { operario: "", checks: {}, obs: "", form: false };
+  const upd = (patch) => setProg((prev) => ({ ...prev, [t.key]: { ...(prev[t.key] || p), ...patch } }));
+  const items = t.act.checklist || [];
+  const ctrlCfg = t.act.controlId && typeof CONTROLES_CONFIG !== "undefined" ? CONTROLES_CONFIG[t.act.controlId] : null;
+  const respondidos = items.filter((i) => p.checks[i]?.estado).length;
+  const soloLectura = !!t.reg;
+
+  if (verForm && ctrlCfg) {
+    return (
+      <FormControl id={t.act.controlId} cfg={ctrlCfg} toast={toast} operarios={operarios}
+        onBack={() => setVerForm(false)}
+        onEnviado={() => upd({ form: true })} />
+    );
+  }
+
+  function finalizar() {
+    if (!p.operario) { toast("⚠️ Seleccioná quién realizó la tarea", "error"); return; }
+    if (respondidos < items.length) { toast(`⚠️ Faltan ${items.length - respondidos} ítems del checklist`, "error"); return; }
+    const checks = items.map((i) => ({ item: i, estado: p.checks[i].estado, obs: p.checks[i].obs || "" }));
+    const conObs = checks.some((c) => c.estado !== "OK") || !!p.obs.trim();
+    const ahora = new Date();
+    onFinalizar({
+      key: t.key, actId: t.act.id, actividad: t.act.nombre, titulo: t.titulo, fecha: t.fecha,
+      operario: p.operario, fechaFin: tYmd(ahora), hora: ahora.toTimeString().slice(0, 5),
+      estado: conObs ? "con_observaciones" : "ok", checks, obs: p.obs, formControl: !!p.form,
+      emails: t.act.emails || "",
+    });
+    setProg((prev) => { const n = { ...prev }; delete n[t.key]; return n; });
+    toast("✅ Tarea finalizada — se envió el aviso por mail");
+    onBack();
+  }
+
+  const checksVista = soloLectura ? Object.fromEntries((t.reg.checks || []).map((c) => [c.item, c])) : p.checks;
+
+  return (
+    <div style={BS}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <button style={btn({ background: "transparent", color: C.muted, border: `1px solid ${C.bord}`, padding: "6px 12px", fontSize: "12px" })} onClick={onBack}>← Volver</button>
+        <div style={{ fontWeight: 700, fontSize: "15px", color: t.act.color }}>{t.act.icono} {t.titulo}</div>
+      </div>
+      <div style={card()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+          <div style={{ fontSize: "12px", color: C.muted }}>{tFechaTxt(t.fecha)}{t.act.hora ? ` · ${t.act.hora}` : ""} · {tFrecTxt(t.act)}</div>
+          <span style={pill(T_EST[t.estado].c)}>{T_EST[t.estado].l}</span>
+        </div>
+        {soloLectura ? (
+          <div style={{ fontSize: "12px", marginTop: "10px" }}>Realizada por <b>{t.reg.operario}</b> el {t.reg.fechaFin} a las {t.reg.hora}</div>
+        ) : (
+          <>
+            <label style={{ ...lbl, marginTop: "12px" }}>¿Quién la realiza?</label>
+            <select style={inp} value={p.operario} onChange={(e) => upd({ operario: e.target.value })}>
+              <option value="">— Seleccionar —</option>
+              {operarios.map((o) => <option key={o.id} value={o.nombre}>{o.nombre}</option>)}
+            </select>
+          </>
+        )}
+      </div>
+
+      {ctrlCfg && !soloLectura && (
+        <div style={card({ borderColor: p.form ? C.green : ctrlCfg.color })}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+            <div style={{ fontSize: "12px" }}>Formulario vinculado: <b style={{ color: ctrlCfg.color }}>{ctrlCfg.label}</b></div>
+            {p.form
+              ? <span style={pill(C.green)}>✓ Enviado</span>
+              : <button style={btn({ background: ctrlCfg.color, color: "#fff", fontSize: "12px", padding: "8px 12px" })} onClick={() => setVerForm(true)}>Abrir</button>}
+          </div>
+        </div>
+      )}
+
+      <div style={card()}>
+        <div style={secTit}>CHECKLIST · {soloLectura ? items.length : respondidos}/{items.length}</div>
+        {items.map((item) => {
+          const ch = checksVista[item] || {};
+          return (
+            <div key={item} style={{ borderBottom: `1px solid ${C.bord}`, paddingBottom: "10px", marginBottom: "10px" }}>
+              <div style={{ fontWeight: 600, fontSize: "13px", marginBottom: "8px" }}>{item}</div>
+              <div style={{ display: "flex", gap: "6px", marginBottom: "6px" }}>
+                {["OK", "Observación"].map((est) => {
+                  const on = ch.estado === est, col = est === "OK" ? C.green : C.orange;
+                  return (
+                    <button key={est} disabled={soloLectura}
+                      style={btn({ background: on ? col : "transparent", color: on ? (est === "OK" ? "#0a0c10" : "#fff") : C.muted, border: `1px solid ${on ? col : C.bord}`, flex: 1, fontSize: "12px", padding: "10px", cursor: soloLectura ? "default" : "pointer" })}
+                      onClick={() => upd({ checks: { ...p.checks, [item]: { ...(p.checks[item] || {}), estado: est } } })}>{est}</button>
+                  );
+                })}
+              </div>
+              {ch.estado === "Observación" && (
+                <input style={inp} placeholder="¿Qué pasó?" value={ch.obs || ""} disabled={soloLectura}
+                  onChange={(e) => upd({ checks: { ...p.checks, [item]: { ...(p.checks[item] || {}), obs: e.target.value } } })} />
+              )}
+            </div>
+          );
+        })}
+        <label style={lbl}>Observaciones generales</label>
+        <textarea style={{ ...inp, minHeight: "60px", resize: "vertical" }} disabled={soloLectura}
+          value={soloLectura ? t.reg.obs || "" : p.obs} onChange={(e) => upd({ obs: e.target.value })} />
+      </div>
+
+      {!soloLectura && (
+        <div style={card()}>
+          <button style={btn({ background: `linear-gradient(135deg,${C.green},#059669)`, color: "#0a0c10", fontWeight: 700, width: "100%", fontSize: "14px", padding: "14px" })} onClick={finalizar}>
+            ✅ FINALIZAR TAREA
+          </button>
+          <div style={{ fontSize: "10px", color: C.muted, textAlign: "center", marginTop: "6px" }}>El avance se guarda en este equipo hasta que la finalices.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Calendario mensual ────────────────────────────────────────
+function CalendarioTareas({ actividades, registro, onAbrir }) {
+  const [mes, setMes] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const [diaSel, setDiaSel] = useState(tHoy());
+  const desde = tYmd(mes);
+  const hasta = tYmd(new Date(mes.getFullYear(), mes.getMonth() + 1, 0));
+  const lista = tInstancias(actividades, registro, desde, hasta);
+  const porDia = {};
+  lista.forEach((t) => { (porDia[t.fecha] = porDia[t.fecha] || []).push(t); });
+  const offset = (mes.getDay() + 6) % 7; // semana arranca lunes
+  const nDias = tParse(hasta).getDate();
+  const celdas = [...Array(offset).fill(null), ...Array.from({ length: nDias }, (_, i) => tYmd(new Date(mes.getFullYear(), mes.getMonth(), i + 1)))];
+  const mover = (n) => setMes(new Date(mes.getFullYear(), mes.getMonth() + n, 1));
+  const hoy = tHoy();
+
+  return (
+    <>
+      <div style={card({ padding: "12px" })}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+          <button style={btn({ background: C.surf2, color: C.text, padding: "6px 12px" })} onClick={() => mover(-1)}>←</button>
+          <div style={{ fontWeight: 700 }}>{MESES_TXT[mes.getMonth()]} {mes.getFullYear()}</div>
+          <button style={btn({ background: C.surf2, color: C.text, padding: "6px 12px" })} onClick={() => mover(1)}>→</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: "4px" }}>
+          {["L", "M", "M", "J", "V", "S", "D"].map((d, i) => <div key={i} style={{ fontSize: "10px", color: C.muted, textAlign: "center", fontWeight: 700 }}>{d}</div>)}
+          {celdas.map((f, i) => {
+            if (!f) return <div key={i} />;
+            const ts = porDia[f] || [];
+            const sel = f === diaSel;
+            return (
+              <div key={i} onClick={() => setDiaSel(f)}
+                style={{ minHeight: "48px", borderRadius: "8px", padding: "4px", cursor: "pointer", background: sel ? `${C.accent}30` : C.surf2, border: `1px solid ${f === hoy ? C.orange : sel ? C.accent : "transparent"}` }}>
+                <div style={{ fontSize: "11px", fontWeight: 700, color: f === hoy ? C.orange : C.text }}>{tParse(f).getDate()}</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "2px", marginTop: "3px" }}>
+                  {ts.slice(0, 6).map((t) => <div key={t.key} title={t.titulo} style={{ width: "7px", height: "7px", borderRadius: "50%", background: T_EST[t.estado].c }} />)}
+                  {ts.length > 6 && <span style={{ fontSize: "8px", color: C.muted }}>+{ts.length - 6}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginTop: "10px" }}>
+          {Object.values(T_EST).map((e) => <span key={e.l} style={{ fontSize: "10px", color: C.muted, display: "flex", alignItems: "center", gap: "4px" }}><span style={{ width: "7px", height: "7px", borderRadius: "50%", background: e.c }} />{e.l}</span>)}
+        </div>
+      </div>
+      <div style={secTit}>{tFechaTxt(diaSel)}</div>
+      {(porDia[diaSel] || []).length === 0 && <div style={{ color: C.muted, fontSize: "12px", textAlign: "center", padding: "12px" }}>Sin tareas este día.</div>}
+      {(porDia[diaSel] || []).map((t) => <FilaTarea key={t.key} t={t} onClick={() => onAbrir(t)} />)}
+    </>
+  );
+}
+
+// ── Mapa de actividades (solo lectura: se edita en la pestaña "Tareas" del Sheet) ──
+function MapaActividades({ actividades, registro }) {
+  const hoy = tHoy();
+  const d0 = new Date(); const desde = tYmd(new Date(d0.getFullYear(), d0.getMonth(), 1));
+  const hasta = tYmd(new Date(d0.getFullYear(), d0.getMonth() + 1, 0));
+  const dias = []; for (let s = desde; s <= hasta; s = tAdd(s, 1)) dias.push(s);
+  const mapa = {}; tInstancias(actividades, registro, desde, hasta).forEach((t) => { mapa[t.key] = t; });
+
+  function cumplimiento(act) {
+    const l = tInstancias([act], registro, tAdd(hoy, -90), tAdd(hoy, -1));
+    if (!l.length) return null;
+    return Math.round((l.filter((t) => t.estado === "hecha" || t.estado === "observada").length / l.length) * 100);
+  }
+
+  return (
+    <>
+      <div style={card({ padding: "12px", overflowX: "auto" })}>
+        <div style={secTit}>MAPA · {MESES_TXT[d0.getMonth()].toUpperCase()}</div>
+        <table style={{ borderCollapse: "collapse", fontSize: "10px", minWidth: "100%" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "2px 6px", color: C.muted, position: "sticky", left: 0, background: C.surf }}>Actividad</th>
+              {dias.map((s) => <th key={s} style={{ width: "16px", color: s === hoy ? C.orange : C.muted, fontWeight: s === hoy ? 800 : 500 }}>{tParse(s).getDate()}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {actividades.filter((a) => a.activa !== false).map((a) => (
+              <tr key={a.id}>
+                <td style={{ padding: "3px 6px", whiteSpace: "nowrap", position: "sticky", left: 0, background: C.surf }}>{a.icono} {a.nombre}</td>
+                {dias.map((s) => {
+                  const t = mapa[`${a.id}_${s}`];
+                  return <td key={s} style={{ padding: "1px" }}>
+                    <div title={t ? `${t.titulo} · ${T_EST[t.estado].l}` : ""} style={{ width: "14px", height: "14px", borderRadius: "3px", background: t ? T_EST[t.estado].c : C.surf2, opacity: t ? 1 : 0.4 }} />
+                  </td>;
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ fontSize: "11px", color: C.muted, textAlign: "center" }}>
+        ✏️ Las actividades se cargan y editan en la pestaña <b>Tareas</b> del Sheet (fechas puntuales en <b>Tareas_Fechas</b>). Tocá ↻ para ver los cambios.
+      </div>
+
+      {actividades.map((a) => {
+        const prox = tInstancias([a], registro, hoy, tAdd(hoy, 400)).find((t) => t.estado !== "hecha" && t.estado !== "observada");
+        const cump = cumplimiento(a);
+        return (
+          <div key={a.id} style={card({ padding: "12px 14px", borderLeft: `4px solid ${a.color}`, opacity: a.activa === false ? 0.5 : 1 })}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: "14px", color: a.color }}>{a.icono} {a.nombre}</div>
+                <div style={{ fontSize: "11px", color: C.muted, marginTop: "2px" }}>
+                  {tFrecTxt(a)}{a.hora ? ` · ${a.hora}` : ""} · {(a.checklist || []).length} ítems{a.controlId && CONTROLES_CONFIG[a.controlId] ? ` · 📋 ${CONTROLES_CONFIG[a.controlId].label}` : ""}
+                </div>
+                <div style={{ fontSize: "11px", color: C.muted }}>Próxima: {prox ? `${tFechaTxt(prox.fecha)} (${prox.titulo})` : "—"}</div>
+              </div>
+              {cump !== null && <span style={pill(cump >= 90 ? C.green : cump >= 70 ? C.yellow : C.red)}>{cump}% 90d</span>}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ── Módulo principal ──────────────────────────────────────────
+function ModTareas({ toast, operarios, tareas }) {
+  const { actividades, registro, recargar, cargando, registrar } = tareas;
+  const [tab, setTab] = useState("hoy");
+  const [abierta, setAbierta] = useState(null);
+  const [permiso, setPermiso] = useState(() => ("Notification" in window ? Notification.permission : "unsupported"));
+
+  if (abierta) {
+    // refrescar estado por si se finalizó desde otro equipo
+    const t = tInstancias(actividades, registro, abierta.fecha, abierta.fecha).find((x) => x.key === abierta.key) || abierta;
+    return <EjecutarTarea t={t} operarios={operarios} toast={toast} onBack={() => setAbierta(null)} onFinalizar={registrar} />;
+  }
+
+  const { atrasadas, hoy, proximas } = tResumen(actividades, registro);
+  const historial = [...registro].sort((a, b) => (b.fechaFin + b.hora).localeCompare(a.fechaFin + a.hora)).slice(0, 60);
+  const tabs = [["hoy", "Hoy"], ["calendario", "Calendario"], ["mapa", "Mapa"], ["historial", "Historial"]];
+
+  return (
+    <div style={BS}>
+      <div style={{ display: "flex", gap: "6px" }}>
+        {tabs.map(([id, l]) => (
+          <button key={id} style={btn({ flex: 1, padding: "9px 4px", fontSize: "12px", background: tab === id ? C.accent : C.surf2, color: tab === id ? "#fff" : C.muted })} onClick={() => setTab(id)}>{l}</button>
+        ))}
+        <button style={btn({ background: C.surf2, color: C.muted, padding: "9px 10px" })} onClick={recargar} title="Actualizar">
+          <span style={{ display: "inline-block", animation: cargando ? "spin 1s linear infinite" : undefined }}>↻</span>
+        </button>
+      </div>
+
+      {tab === "hoy" && (
+        <>
+          {permiso === "default" && (
+            <button style={btn({ background: `${C.blue}18`, color: C.blue, border: `1px solid ${C.blue}`, width: "100%" })}
+              onClick={() => Notification.requestPermission().then(setPermiso)}>🔔 Activar notificaciones en este equipo</button>
+          )}
+          {atrasadas.length > 0 && <div style={{ ...secTit, color: C.red }}>⚠️ ATRASADAS ({atrasadas.length})</div>}
+          {atrasadas.map((t) => <FilaTarea key={t.key} t={t} onClick={() => setAbierta(t)} />)}
+          <div style={secTit}>HOY · {tFechaTxt(tHoy())}</div>
+          {hoy.length === 0 && <div style={{ color: C.muted, fontSize: "12px", textAlign: "center", padding: "8px" }}>No hay tareas pendientes para hoy 👌</div>}
+          {hoy.map((t) => <FilaTarea key={t.key} t={t} onClick={() => setAbierta(t)} />)}
+          {tInstancias(actividades, registro, tHoy(), tHoy()).filter((t) => t.reg).map((t) => <FilaTarea key={t.key} t={t} onClick={() => setAbierta(t)} />)}
+          {proximas.length > 0 && <div style={secTit}>PRÓXIMAS (PREAVISO)</div>}
+          {proximas.map((t) => <FilaTarea key={t.key} t={t} onClick={() => setAbierta(t)} />)}
+        </>
+      )}
+
+      {tab === "calendario" && <CalendarioTareas actividades={actividades} registro={registro} onAbrir={setAbierta} />}
+
+      {tab === "mapa" && <MapaActividades actividades={actividades} registro={registro} />}
+
+      {tab === "historial" && (
+        <>
+          {historial.length === 0 && <div style={{ color: C.muted, fontSize: "12px", textAlign: "center", padding: "20px" }}>Todavía no hay tareas finalizadas.</div>}
+          {historial.map((r) => {
+            const nOk = (r.checks || []).filter((c) => c.estado === "OK").length;
+            return (
+              <div key={r.key} style={card({ padding: "10px 14px" })}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+                  <div style={{ fontWeight: 700, fontSize: "13px" }}>{r.titulo}</div>
+                  <span style={pill(r.estado === "con_observaciones" ? C.yellow : C.green)}>{nOk}/{(r.checks || []).length} OK</span>
+                </div>
+                <div style={{ fontSize: "11px", color: C.muted, marginTop: "2px" }}>
+                  Programada {tFechaTxt(r.fecha)} · hecha {r.fechaFin} {r.hora} · {r.operario}
+                </div>
+                {(r.checks || []).filter((c) => c.estado !== "OK").map((c) => <div key={c.item} style={{ fontSize: "11px", color: C.orange, marginTop: "2px" }}>• {c.item}: {c.obs || "observación"}</div>)}
+                {r.obs && <div style={{ fontSize: "11px", color: C.text, marginTop: "4px" }}>📝 {r.obs}</div>}
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // APP PRINCIPAL
 // ═══════════════════════════════════════════════════════════════
 export default function App() {
@@ -6885,6 +7528,9 @@ export default function App() {
   const [operariosRaw, setOperariosRaw] = useDB("rosarc_ops_v6", []);
   const [prods] = useDB("rosarc_recepcion_v2", null);
   const { cons, setCons, sincronizar, syncOk, lastSync } = useConsolidados();
+  const tareas = useTareas();
+  useAlertasTareas(tareas.actividades, tareas.registro);
+  const nTareasPend = (() => { const r = tResumen(tareas.actividades, tareas.registro); return r.atrasadas.length + r.hoy.length; })();
 
   const setOperarios = useCallback((fn) => {
     setOperariosRaw((prev) => {
@@ -7009,6 +7655,7 @@ export default function App() {
       { id:"metricas",  icon:"📊", label:"Métricas",   color:C.red,     desc:"Ver rendimiento" },
       { id:"roturas",   icon:"⚠️", label:"Roturas",    color:"#e91e63", desc:"Rotura y vencimientos" },
       { id:"controles", icon:"📋", label:"Controles",  color:"#00bcd4", desc:"Controles operativos" },
+      { id:"tareas",    icon:"📅", label:"Tareas",     color:"#a855f7", desc:"Calendario y checklist", badge:nTareasPend },
     ];
     return (
       <div style={{ background:C.bg, minHeight:"100vh", color:C.text, fontFamily:"system-ui,sans-serif", display:"flex", flexDirection:"column" }}>
@@ -7032,6 +7679,7 @@ export default function App() {
 
         {/* Grid de módulos */}
         <div style={{ flex:1, padding:"20px", display:"flex", flexDirection:"column", justifyContent:"center", maxWidth:"500px", width:"100%", margin:"0 auto" }}>
+          <BannerTareas actividades={tareas.actividades} registro={tareas.registro} onAbrir={() => { setUsuarioActivo(null); setTab("tareas"); }} />
           <div style={{ fontSize:"12px", color:C.muted, letterSpacing:"2px", textTransform:"uppercase", marginBottom:"16px", textAlign:"center" }}>¿Qué vas a hacer hoy?</div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:"12px" }}>
             {modulos.map(m => (
@@ -7047,11 +7695,13 @@ export default function App() {
                   opacity: m.disabled ? 0.4 : 1,
                   display:"flex", flexDirection:"column", alignItems:"center", gap:"8px",
                   transition:"transform .1s",
+                  position:"relative",
                 }}
                 onClick={() => { if (!m.disabled) { setUsuarioActivo(null); setTab(m.id); } }}
                 onMouseDown={e => { if (!m.disabled) e.currentTarget.style.transform="scale(.97)"; }}
                 onMouseUp={e => { e.currentTarget.style.transform="scale(1)"; }}
               >
+                {m.badge > 0 && <div style={{ position:"absolute", top:"8px", right:"8px", minWidth:"20px", height:"20px", borderRadius:"10px", background:C.red, color:"#fff", fontSize:"11px", fontWeight:700, display:"flex", alignItems:"center", justifyContent:"center", padding:"0 5px" }}>{m.badge}</div>}
                 <div style={{ fontSize:"32px" }}>{m.icon}</div>
                 <div style={{ fontSize:"16px", fontWeight:700, color: m.disabled ? C.muted : m.color }}>{m.label}</div>
                 <div style={{ fontSize:"10px", color:C.muted, textAlign:"center" }}>{m.desc}</div>
@@ -7102,6 +7752,7 @@ export default function App() {
       {tab === "metricas" && <ModMetricas toast={showToast} cons={cons} prods={prods} />}
       {tab === "roturas" && <ModRoturas toast={showToast} operarios={operarios} />}
       {tab === "controles" && <ModControles toast={showToast} operarios={operarios} />}
+      {tab === "tareas" && <ModTareas toast={showToast} operarios={operarios} tareas={tareas} />}
     </div>
   );
 }
