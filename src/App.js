@@ -7130,9 +7130,18 @@ function useTareas() {
     return () => clearInterval(t);
   }, [recargar]);
 
-  const registrar = useCallback((entry) => {
-    setRegistro((prev) => [...prev.filter((r) => r.key !== entry.key), entry]);
-    api.post("finalizar_tarea", entry);
+  // Envía la tarea y LEE la respuesta del script (a diferencia de api.post, que envía a ciegas)
+  const registrar = useCallback(async (entry) => {
+    try {
+      const r = await fetch(APPS_SCRIPT_URL, { method: "POST", body: JSON.stringify({ tipo: "finalizar_tarea", data: entry }) });
+      const txt = await r.text();
+      let d;
+      try { d = JSON.parse(txt); } catch { d = { status: "error", mensaje: "Respuesta no válida: " + txt.slice(0, 120) }; }
+      if (d.status === "ok") setRegistro((prev) => [...prev.filter((r) => r.key !== entry.key), entry]);
+      return d;
+    } catch (e) {
+      return { status: "error", mensaje: "Sin conexión con el script: " + (e.message || e) };
+    }
   }, [setRegistro]);
 
   return { actividades, registro, recargar, cargando, registrar };
@@ -7215,6 +7224,7 @@ function FilaTarea({ t, onClick }) {
 function EjecutarTarea({ t, operarios, toast, onBack, onFinalizar }) {
   const [prog, setProg] = useDB("rosarc_tareas_prog_v1", {});
   const [verForm, setVerForm] = useState(false);
+  const [enviando, setEnviando] = useState(false);
   const p = prog[t.key] || { operario: "", checks: {}, obs: "", form: false };
   const upd = (patch) => setProg((prev) => ({ ...prev, [t.key]: { ...(prev[t.key] || p), ...patch } }));
   const items = t.act.checklist || [];
@@ -7230,20 +7240,28 @@ function EjecutarTarea({ t, operarios, toast, onBack, onFinalizar }) {
     );
   }
 
-  function finalizar() {
+  async function finalizar() {
+    if (enviando) return;
     if (!p.operario) { toast("⚠️ Seleccioná quién realizó la tarea", "error"); return; }
     if (respondidos < items.length) { toast(`⚠️ Faltan ${items.length - respondidos} ítems del checklist`, "error"); return; }
     const checks = items.map((i) => ({ item: i, estado: p.checks[i].estado, obs: p.checks[i].obs || "" }));
     const conObs = checks.some((c) => c.estado !== "OK") || !!p.obs.trim();
     const ahora = new Date();
-    onFinalizar({
+    setEnviando(true);
+    const res = await onFinalizar({
       key: t.key, actId: t.act.id, actividad: t.act.nombre, titulo: t.titulo, fecha: t.fecha,
       operario: p.operario, fechaFin: tYmd(ahora), hora: ahora.toTimeString().slice(0, 5),
       estado: conObs ? "con_observaciones" : "ok", checks, obs: p.obs, formControl: !!p.form,
       emails: t.act.emails || "",
     });
+    setEnviando(false);
+    if (!res || res.status !== "ok") {
+      // no se guardó: el avance queda en el equipo para reintentar
+      toast("❌ No se guardó en el Sheet: " + ((res && res.mensaje) || "error desconocido"), "error");
+      return;
+    }
     setProg((prev) => { const n = { ...prev }; delete n[t.key]; return n; });
-    toast("✅ Tarea finalizada — se envió el aviso por mail");
+    toast("✅ Tarea guardada en el Sheet");
     onBack();
   }
 
@@ -7316,7 +7334,7 @@ function EjecutarTarea({ t, operarios, toast, onBack, onFinalizar }) {
       {!soloLectura && (
         <div style={card()}>
           <button style={btn({ background: `linear-gradient(135deg,${C.green},#059669)`, color: "#0a0c10", fontWeight: 700, width: "100%", fontSize: "14px", padding: "14px" })} onClick={finalizar}>
-            ✅ FINALIZAR TAREA
+            {enviando ? "⏳ Guardando..." : "✅ FINALIZAR TAREA"}
           </button>
           <div style={{ fontSize: "10px", color: C.muted, textAlign: "center", marginTop: "6px" }}>El avance se guarda en este equipo hasta que la finalices.</div>
         </div>
