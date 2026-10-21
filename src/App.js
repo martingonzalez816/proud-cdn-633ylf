@@ -6552,9 +6552,9 @@ const CONTROLES_CONFIG = {
     campos: ["temperatura"],
   },
   mantenimiento_vehiculos: {
-    label: "🚛 Mantenimiento Vehículos",
+    label: "🚛 Checklist Reparto (Vehículos)",
     color: "#f57f17",
-    frecuenciaDias: 30,
+    frecuenciaDias: 7,
     items: ["Camión 1/3","Camión 4/6","Camión 7/8","Camión 9/11","Transit","Boxer","Sprinter"],
     campos: ["checklist_vehiculo"],
   },
@@ -6580,10 +6580,11 @@ const CONTROLES_CONFIG = {
 };
 
 const CHECKLIST_VEHICULO = [
-  "Luces delanteras","Luces traseras","Frenos",
-  "Presión neumáticos","Limpieza interior","Bocina",
-  "Agua refrigerante","Líquido frenos",
+  "Luces","Frenos","Líquido de frenos","Líquido de batería",
+  "Líquido refrigerante","Bocina","Presión neumáticos",
 ];
+// estado del checklist de un vehículo: cuántos ítems respondidos
+const vehProgreso = (getDato, veh) => CHECKLIST_VEHICULO.filter(it => getDato(`${veh}::${it}`, "estado")).length;
 
 function ModControles({ toast, operarios }) {
   const [subTab, setSubTab] = useState(null);
@@ -6665,6 +6666,20 @@ function FormControl({ id, cfg, toast, operarios, onBack, onEnviado }) {
 
   async function enviar() {
     if (!operario) { toast("⚠️ Seleccioná el operario", "error"); return; }
+    let filasVeh = null;
+    if (id === "mantenimiento_vehiculos") {
+      const empezados = cfg.items.filter(v => vehProgreso(getDato, v) > 0);
+      const incompletos = empezados.filter(v => vehProgreso(getDato, v) < CHECKLIST_VEHICULO.length);
+      if (!empezados.length) { toast("⚠️ Completá el checklist de al menos un vehículo", "error"); return; }
+      if (incompletos.length) { toast(`⚠️ Checklist incompleto: ${incompletos.join(", ")}`, "error"); return; }
+      filasVeh = [];
+      empezados.forEach(v => {
+        CHECKLIST_VEHICULO.forEach(it => filasVeh.push({
+          item: v, control: it, estado: getDato(`${v}::${it}`, "estado"), observacion: getDato(`${v}::${it}`, "obs"),
+        }));
+        if (getDato(v, "obsGeneral")) filasVeh.push({ item: v, control: "Observaciones generales", estado: "Observación", observacion: getDato(v, "obsGeneral") });
+      });
+    }
     setEnviando(true);
     try {
       const payload = {
@@ -6673,7 +6688,7 @@ function FormControl({ id, cfg, toast, operarios, onBack, onEnviado }) {
         operario,
         fecha: todayStr(),
         hora: new Date().toLocaleTimeString("es-AR", { hour:"2-digit", minute:"2-digit" }),
-        items: cfg.dinamico
+        items: filasVeh ? filasVeh : cfg.dinamico
           ? repartos.map((r, i) => ({ item: `Reparto ${i+1}`, ...r }))
           : items.map(item => {
               const obj = { item };
@@ -6824,41 +6839,66 @@ function FormControl({ id, cfg, toast, operarios, onBack, onEnviado }) {
         </div>
       )}
 
-      {/* MANTENIMIENTO VEHÍCULOS */}
-      {id === "mantenimiento_vehiculos" && (
+      {/* MANTENIMIENTO VEHÍCULOS — checklist por reparto */}
+      {id === "mantenimiento_vehiculos" && (() => {
+        const veh = getDato("vehiculo","nombre");
+        const total = CHECKLIST_VEHICULO.length;
+        return (
         <div style={card()}>
-          <div style={secTit}>🚛 VEHÍCULO</div>
-          <label style={lbl}>Seleccionar vehículo</label>
-          <select style={{ ...inp, marginBottom:"16px" }}
-            value={getDato("vehiculo","nombre")} onChange={e => setDato("vehiculo","nombre",e.target.value)}>
-            <option value="">— Seleccionar —</option>
-            {cfg.items.map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-          {getDato("vehiculo","nombre") && (
+          <div style={secTit}>🚛 REPARTOS · tocá cada vehículo y completá su checklist</div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(100px,1fr))", gap:"6px", marginBottom:"16px" }}>
+            {cfg.items.map(v => {
+              const n = vehProgreso(getDato, v), listo = n === total, sel = v === veh;
+              const col = listo ? C.green : n > 0 ? C.orange : C.muted;
+              return (
+                <button key={v} onClick={() => setDato("vehiculo","nombre",v)}
+                  style={btn({ flexDirection:"column", gap:"2px", padding:"8px 4px", fontSize:"12px",
+                    background: sel ? `${col}30` : C.surf2, color: listo ? C.green : C.text,
+                    border:`2px solid ${sel ? col : listo ? `${C.green}80` : C.bord}` })}>
+                  <span style={{ fontWeight:700 }}>{listo ? "✓ " : ""}{v}</span>
+                  <span style={{ fontSize:"10px", color: col }}>{n}/{total}</span>
+                </button>
+              );
+            })}
+          </div>
+          {veh && (
             <>
-              <div style={secTit}>CHECKLIST</div>
-              {CHECKLIST_VEHICULO.map(item => (
-                <div key={item} style={{ borderBottom:`1px solid ${C.bord}`, paddingBottom:"10px", marginBottom:"10px" }}>
-                  <div style={{ fontWeight:600, fontSize:"13px", marginBottom:"8px" }}>{item}</div>
+              <div style={secTit}>CHECKLIST · {veh}</div>
+              {CHECKLIST_VEHICULO.map(it => {
+                const k = `${veh}::${it}`, e = getDato(k,"estado");
+                return (
+                <div key={k} style={{ borderBottom:`1px solid ${C.bord}`, paddingBottom:"10px", marginBottom:"10px" }}>
+                  <div style={{ fontWeight:600, fontSize:"13px", marginBottom:"8px" }}>{it}</div>
                   <div style={{ display:"flex", gap:"6px", marginBottom:"6px" }}>
                     {["OK","Observación"].map(est => (
                       <button key={est}
-                        style={btn({ background: getDato(item,"estado")===est ? (est==="OK"?C.green:C.orange) : "transparent",
-                          color: getDato(item,"estado")===est ? (est==="OK"?"#0a0c10":"#fff") : C.muted,
-                          border:`1px solid ${getDato(item,"estado")===est ? (est==="OK"?C.green:C.orange) : C.bord}`,
+                        style={btn({ background: e===est ? (est==="OK"?C.green:C.orange) : "transparent",
+                          color: e===est ? (est==="OK"?"#0a0c10":"#fff") : C.muted,
+                          border:`1px solid ${e===est ? (est==="OK"?C.green:C.orange) : C.bord}`,
                           flex:1, fontSize:"12px", padding:"10px" })}
-                        onClick={() => { setDato(item,"estado",est); if(est==="Observación") setObsAbiertas(p=>({...p,[item]:true})); }}>{est}</button>
+                        onClick={() => setDato(k,"estado",est)}>{est}</button>
                     ))}
                   </div>
-                  {(obsAbiertas[item] || getDato(item,"estado")==="Observación") && (
-                    <input style={inp} placeholder="Descripción..." value={getDato(item,"obs")} onChange={e => setDato(item,"obs",e.target.value)} />
+                  {e === "Observación" && (
+                    <input style={inp} placeholder="¿Qué tiene?" value={getDato(k,"obs")} onChange={ev => setDato(k,"obs",ev.target.value)} />
                   )}
                 </div>
-              ))}
+                );
+              })}
+              <label style={lbl}>Observaciones de {veh}</label>
+              <textarea style={{ ...inp, minHeight:"50px", resize:"vertical", marginBottom:"10px" }}
+                value={getDato(veh,"obsGeneral")} onChange={ev => setDato(veh,"obsGeneral",ev.target.value)} />
+              {vehProgreso(getDato, veh) === total && (() => {
+                const sig = cfg.items.find(v => vehProgreso(getDato, v) < total);
+                return sig
+                  ? <button style={btn({ background:C.accent, color:"#fff", width:"100%" })} onClick={() => setDato("vehiculo","nombre",sig)}>Siguiente: {sig} →</button>
+                  : <div style={{ fontSize:"12px", color:C.green, textAlign:"center" }}>✓ Todos los vehículos completos — ya podés enviar</div>;
+              })()}
             </>
           )}
         </div>
-      )}
+        );
+      })()}
 
       {/* BOTÓN ENVIAR */}
       <div style={card()}>
