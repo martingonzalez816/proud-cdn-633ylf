@@ -6570,6 +6570,13 @@ const CONTROLES_CONFIG = {
     ],
     campos: ["estado"],
   },
+  relevamiento_venc: {
+    label: "📆 Relevamiento Vencimientos",
+    color: "#e91e63",
+    frecuenciaDias: 7,
+    items: [],
+    campos: [],
+  },
   limpieza: {
     label: "🧹 Limpieza",
     color: "#2e7d32",
@@ -6634,7 +6641,7 @@ function ModControles({ toast, operarios }) {
   }
 
   return (
-    <FormControl
+    <FormularioControl
       id={subTab}
       cfg={CONTROLES_CONFIG[subTab]}
       toast={toast}
@@ -6642,6 +6649,237 @@ function ModControles({ toast, operarios }) {
       onBack={() => setSubTab(null)}
       onEnviado={(id, fecha) => setUltimosControles(prev => ({ ...prev, [id]: { fecha } }))}
     />
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RELEVAMIENTO DE VENCIMIENTOS — busca en Maestro_Articulos y guarda en Stock_Vencimientos
+// ═══════════════════════════════════════════════════════════════
+function FormularioControl(props) {
+  return props.id === "relevamiento_venc" ? <RelevamientoVenc {...props} /> : <FormControl {...props} />;
+}
+
+const rvNorm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
+const rvDias = (venc) => { const h = new Date(); h.setHours(0, 0, 0, 0); return Math.round((tParse(venc) - h) / 86400000); };
+const rvEstado = (d) => d < 0 ? { l: "VENCIDO", c: C.red } : d < 30 ? { l: "CRÍTICO", c: C.orange } : d < 90 ? { l: "ALERTA", c: C.yellow } : { l: "OK", c: C.green };
+
+function RelevamientoVenc({ id, cfg, toast, operarios, onBack, onEnviado }) {
+  const [maestro, setMaestro] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [rel, setRel] = useDB("rosarc_relev_venc_v1", { operario: "", pasillo: "", items: [] });
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(null);
+  const [cant, setCant] = useState({ bu: "", di: "", un: "" });
+  const [venc, setVenc] = useState("");
+  const [lote, setLote] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    fetch(`${APPS_SCRIPT_URL}?accion=leer_maestro`).then((r) => r.json())
+      .then((d) => { if (d.status === "ok") setMaestro(d.articulos || []); })
+      .catch(() => toast("⚠️ No se pudo cargar el maestro de artículos", "error"))
+      .finally(() => setCargando(false));
+  }, []);
+
+  const setR = (patch) => setRel((prev) => ({ ...prev, ...patch }));
+  const uBu = sel ? Number(sel.unidad_bulto) || 1 : 1;
+  const uDi = sel ? Number(sel.unidad_display) || 1 : 1;
+  const total = (Number(cant.bu) || 0) * uBu + (Number(cant.di) || 0) * uDi + (Number(cant.un) || 0);
+
+  // Sugerencias mientras escribe
+  const qn = rvNorm(q);
+  const sugerencias = !qn || sel ? [] : maestro.filter((a) =>
+    /^\d+$/.test(qn)
+      ? String(a.codigo).startsWith(qn) || [a.ean_bulto, a.ean_display, a.ean_unidad].some((e) => String(e || "").includes(qn))
+      : rvNorm(a.descripcion).includes(qn)
+  ).slice(0, 8);
+
+  function elegir(a) {
+    setSel(a); setQ(""); setCant({ bu: "", di: "", un: "" }); setVenc(""); setLote("");
+  }
+
+  // Enter (o el escáner, que escribe y manda Enter): código corto exacto o EAN
+  function buscar() {
+    const s = String(q).trim();
+    if (!s) return;
+    const a = maestro.find((x) => String(x.codigo).trim() === s) ||
+      maestro.find((x) => [x.ean_bulto, x.ean_display, x.ean_unidad].some((e) => String(e || "").trim() === s));
+    if (a) elegir(a);
+    else if (sugerencias.length === 1) elegir(sugerencias[0]);
+    else toast(`⚠️ "${s}" no está en el maestro de artículos`, "error");
+  }
+
+  function agregar() {
+    if (!sel) return;
+    if (total <= 0) { toast("⚠️ Ingresá la cantidad", "error"); return; }
+    if (!venc) { toast("⚠️ Ingresá la fecha de vencimiento", "error"); return; }
+    const item = {
+      uid: Date.now(), codigo: String(sel.codigo), descripcion: sel.descripcion,
+      ean: sel.ean_bulto || sel.ean_display || sel.ean_unidad || "",
+      cantidad: total, detalle: [cant.bu && `${cant.bu} BU`, cant.di && `${cant.di} DI`, cant.un && `${cant.un} UN`].filter(Boolean).join(" + "),
+      vencimiento: venc, lote: lote.trim(),
+    };
+    setRel((prev) => ({ ...prev, items: [item, ...prev.items] }));
+    toast(`✅ ${sel.descripcion.slice(0, 28)} · ${total} un · vence ${venc.split("-").reverse().join("/")}`);
+    setSel(null); setQ("");
+    setTimeout(() => inputRef.current && inputRef.current.focus(), 50);
+  }
+
+  async function enviar() {
+    if (enviando) return;
+    if (!rel.operario) { toast("⚠️ Seleccioná el operario", "error"); return; }
+    if (!rel.items.length) { toast("⚠️ No hay productos cargados", "error"); return; }
+    setEnviando(true);
+    const ubic = rel.pasillo ? `Pasillo ${rel.pasillo}` : "";
+    const items = rel.items.map((i) => ({
+      codigo: i.codigo, descripcion: i.descripcion, ean: i.ean, lote: i.lote,
+      vencimiento: i.vencimiento, cantidad: i.cantidad, ubicacion: ubic, operario: rel.operario,
+    }));
+    try {
+      const r = await fetch(APPS_SCRIPT_URL, { method: "POST", body: JSON.stringify({ tipo: "guardar_stock", data: { items } }) });
+      const txt = await r.text();
+      let d; try { d = JSON.parse(txt); } catch { d = { status: "error", mensaje: "Respuesta no válida" }; }
+      if (d.status !== "ok") throw new Error(d.mensaje || "error");
+      toast(`✅ ${items.length} productos guardados en el Sheet`);
+      setR({ items: [] });
+      onEnviado && onEnviado(id, tHoy());
+    } catch (e) {
+      toast("❌ No se guardó en el Sheet: " + (e.message || e) + " — la lista queda guardada, reintentá", "error");
+    } finally { setEnviando(false); }
+  }
+
+  const resumen = rel.items.reduce((a, i) => { const e = rvEstado(rvDias(i.vencimiento)).l; a[e] = (a[e] || 0) + 1; return a; }, {});
+
+  return (
+    <div style={BS}>
+      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <button style={btn({ background: "transparent", color: C.muted, border: `1px solid ${C.bord}`, padding: "6px 12px", fontSize: "12px" })} onClick={onBack}>← Volver</button>
+        <div style={{ fontWeight: 700, fontSize: "15px", color: cfg.color }}>{cfg.label}</div>
+      </div>
+
+      <div style={card()}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 110px", gap: "8px" }}>
+          <div>
+            <label style={lbl}>Operario</label>
+            <select style={inp} value={rel.operario} onChange={(e) => setR({ operario: e.target.value })}>
+              <option value="">— Seleccionar —</option>
+              {operarios.map((o) => <option key={o.id} value={o.nombre}>{o.nombre}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={lbl}>Pasillo</label>
+            <input style={inp} inputMode="numeric" placeholder="Ej: 12" value={rel.pasillo} onChange={(e) => setR({ pasillo: e.target.value })} />
+          </div>
+        </div>
+      </div>
+
+      {/* BUSCAR */}
+      {!sel && (
+        <div style={card({ borderColor: C.blue })}>
+          <div style={secTit}>🔎 BUSCAR PRODUCTO</div>
+          <input ref={inputRef} autoFocus style={{ ...inp, fontSize: "16px", padding: "12px" }}
+            placeholder={cargando ? "Cargando maestro..." : "Código corto, EAN (pistola) o nombre"}
+            value={q} disabled={cargando}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); buscar(); } }} />
+          <div style={{ fontSize: "10px", color: C.muted, marginTop: "6px" }}>
+            {cargando ? "" : `${maestro.length} artículos en el maestro · escribí y tocá Enter, o escaneá con la pistola`}
+          </div>
+          {sugerencias.map((a) => (
+            <div key={a.codigo} onClick={() => elegir(a)}
+              style={{ padding: "10px 4px", borderBottom: `1px solid ${C.bord}`, cursor: "pointer", fontSize: "13px" }}>
+              <b>{a.descripcion}</b>
+              <div style={{ fontSize: "10px", color: C.muted }}>Cód. {a.codigo}{a.ean_display ? ` · EAN ${a.ean_display}` : ""}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* PRODUCTO ELEGIDO */}
+      {sel && (
+        <div style={card({ borderColor: C.green })}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "8px" }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: "15px" }}>{sel.descripcion}</div>
+              <div style={{ fontSize: "11px", color: C.muted }}>Cód. {sel.codigo} · Bulto x{uBu}{uDi > 1 ? ` · Display x${uDi}` : ""}</div>
+            </div>
+            <button style={btn({ background: C.surf2, color: C.muted, padding: "4px 10px", fontSize: "12px" })} onClick={() => setSel(null)}>✕</button>
+          </div>
+
+          <label style={{ ...lbl, marginTop: "12px" }}>Cantidad</label>
+          <div style={{ display: "grid", gridTemplateColumns: uDi > 1 ? "1fr 1fr 1fr" : "1fr 1fr", gap: "6px" }}>
+            {[["bu", "Bultos"], ...(uDi > 1 ? [["di", "Displays"]] : []), ["un", "Unidades"]].map(([k, l]) => (
+              <div key={k}>
+                <input type="number" inputMode="numeric" min="0" style={{ ...inp, fontSize: "18px", fontWeight: 700, textAlign: "center" }}
+                  placeholder="0" value={cant[k]} onChange={(e) => setCant({ ...cant, [k]: e.target.value })} />
+                <div style={{ fontSize: "10px", color: C.muted, textAlign: "center", marginTop: "2px" }}>{l}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: "12px", color: total > 0 ? C.green : C.muted, textAlign: "center", margin: "6px 0 10px" }}>= {total} unidades</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+            <div>
+              <label style={lbl}>Vencimiento</label>
+              <input type="date" style={inp} value={venc} onChange={(e) => setVenc(e.target.value)} />
+            </div>
+            <div>
+              <label style={lbl}>Lote (opcional)</label>
+              <input style={inp} value={lote} onChange={(e) => setLote(e.target.value)} />
+            </div>
+          </div>
+          {venc && (() => { const d = rvDias(venc), e = rvEstado(d); return (
+            <div style={{ marginTop: "8px", fontSize: "12px", color: e.c, fontWeight: 700 }}>
+              {d < 0 ? `⚠️ Vencido hace ${-d} días` : `Vence en ${d} días`} · {e.l}
+            </div>); })()}
+
+          <button style={btn({ background: `linear-gradient(135deg,${C.green},#059669)`, color: "#0a0c10", width: "100%", marginTop: "12px", padding: "13px", fontSize: "14px", fontWeight: 700 })} onClick={agregar}>
+            + AGREGAR A LA LISTA
+          </button>
+        </div>
+      )}
+
+      {/* LISTA */}
+      <div style={card()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+          <div style={{ ...secTit, marginBottom: 0, borderBottom: "none" }}>📋 RELEVADOS ({rel.items.length})</div>
+          <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+            {["VENCIDO", "CRÍTICO", "ALERTA", "OK"].filter((k) => resumen[k]).map((k) => {
+              const c = { VENCIDO: C.red, "CRÍTICO": C.orange, ALERTA: C.yellow, OK: C.green }[k];
+              return <span key={k} style={pill(c, { fontSize: "9px" })}>{resumen[k]} {k}</span>;
+            })}
+          </div>
+        </div>
+        {rel.items.length === 0 && <div style={{ color: C.muted, fontSize: "12px", textAlign: "center", padding: "14px" }}>Todavía no cargaste productos.</div>}
+        {rel.items.map((i) => {
+          const d = rvDias(i.vencimiento), e = rvEstado(d);
+          return (
+            <div key={i.uid} style={{ display: "flex", alignItems: "center", gap: "8px", padding: "9px 0", borderBottom: `1px solid ${C.bord}`, borderLeft: `3px solid ${e.c}`, paddingLeft: "8px" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: "13px", fontWeight: 600 }}>{i.descripcion}</div>
+                <div style={{ fontSize: "10px", color: C.muted }}>
+                  Cód. {i.codigo} · {i.cantidad} un{i.detalle ? ` (${i.detalle})` : ""}{i.lote ? ` · Lote ${i.lote}` : ""}
+                </div>
+                <div style={{ fontSize: "11px", color: e.c, fontWeight: 700 }}>
+                  Vence {i.vencimiento.split("-").reverse().join("/")} · {d < 0 ? `vencido hace ${-d}d` : `${d}d`} · {e.l}
+                </div>
+              </div>
+              <button style={btn({ background: "transparent", color: C.red, border: `1px solid ${C.red}40`, padding: "6px 9px", fontSize: "12px" })}
+                onClick={() => setRel((prev) => ({ ...prev, items: prev.items.filter((x) => x.uid !== i.uid) }))}>🗑</button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={card()}>
+        <button style={btn({ background: enviando ? C.surf2 : `linear-gradient(135deg,${C.green},#059669)`, color: enviando ? C.muted : "#0a0c10", fontWeight: 700, width: "100%", fontSize: "14px", padding: "14px" })}
+          disabled={enviando} onClick={enviar}>
+          {enviando ? "⏳ Enviando..." : `📤 ENVIAR AL SHEET (${rel.items.length})`}
+        </button>
+        <div style={{ fontSize: "10px", color: C.muted, textAlign: "center", marginTop: "6px" }}>La lista queda guardada en este equipo hasta que la envíes.</div>
+      </div>
+    </div>
   );
 }
 
@@ -7274,7 +7512,7 @@ function EjecutarTarea({ t, operarios, toast, onBack, onFinalizar }) {
 
   if (verForm && ctrlCfg) {
     return (
-      <FormControl id={t.act.controlId} cfg={ctrlCfg} toast={toast} operarios={operarios}
+      <FormularioControl id={t.act.controlId} cfg={ctrlCfg} toast={toast} operarios={operarios}
         onBack={() => setVerForm(false)}
         onEnviado={() => upd({ form: true })} />
     );
